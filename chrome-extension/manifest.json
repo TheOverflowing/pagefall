@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "拾页 · 晋江连接",
+  "version": "0.1.1",
+  "description": "将 Chrome 中的晋江登录连接到本机拾页，仅访问晋江站点。",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAu59kDNsWXcZywGbpZ2z2eyatGDEOE4/xHIJdeqWMnC2itsERz2dwQQ9ms5s6TQFXYXWv75dz6awzZMvLUX2Hjm0RYWhvuLX2c3EOh47mWGKRl2ypQAyH/VIHhS0V2odHoWq9WmRkRkCu9FR0DhDKKC1/wC1FPVRLMktnAFHc11FjumT+0gN7SFJ9d0scwCVzguspAOJw6zUfXRyq4feO0aHZR0ov+qC2AclLb4WONVcJr8T3TRpCjTyca8aHg34IJwmlUPXpi910PnZheCsDBuawVZzuVM1ibrsG9bWH29ZRGzYX5QS7Yb3R6O2/eiXPOG+IlAcelIG1Zd2nW/PzlQIDAQAB",
+  "permissions": [
+    "cookies",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "*://*.jjwxc.net/*",
+    "*://*.jjwxc.com/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "连接拾页"
+  }
+}

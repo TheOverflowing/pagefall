@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>连接拾页</title>
+  <style>
+    :root { color-scheme: light dark; font: 14px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+    body { width: 292px; margin: 0; padding: 24px; color: #252724; background: #f8f7f3; }
+    .brand { font-size: 12px; letter-spacing: 2px; color: #6b735e; }
+    h1 { margin: 10px 0; font-size: 24px; font-weight: 650; letter-spacing: -.5px; }
+    p { margin: 0 0 18px; color: #62675e; }
+    button { width: 100%; border: 0; border-radius: 10px; padding: 12px 18px; font: inherit; font-weight: 600; color: white; background: #4d6246; cursor: pointer; }
+    button:focus-visible { outline: 3px solid #9cae7f; outline-offset: 3px; }
+    button:disabled { opacity: .55; cursor: wait; }
+    #status { min-height: 22px; margin: 14px 0 0; font-size: 12px; overflow-wrap: anywhere; }
+    @media (prefers-color-scheme: dark) {
+      body { color: #eff1e8; background: #242721; }
+      p, #status { color: #b9c1b1; }
+      .brand { color: #9faa92; }
+      button { background: #779064; }
+    }
+  </style>
+</head>
+<body>
+  <div class="brand">拾页 · CHROME</div>
+  <h1>把晋江连接到拾页</h1>
+  <p>打开拾页，在 Chrome 登录晋江，再连接。</p>
+  <button id="connect" type="button">连接拾页</button>
+  <p id="status" role="status" aria-live="polite"></p>
+  <script src="popup.js"></script>
+</body>
+</html>

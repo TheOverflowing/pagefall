@@ -1,0 +1,1427 @@
+{
+  "version": 1,
+  "upstream": {
+    "repository": "https://github.com/404-novel-project/novel-downloader",
+    "commit": "57cef4fc94638009fb1734e9e90feb8ccb7720bb",
+    "license": "AGPL-3.0-or-later"
+  },
+  "rules": [
+    {
+      "id": "c101kanshu",
+      "name": "101 看书",
+      "hosts": [
+        "101kks.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/101kanshu.ts",
+      "export": "c101kanshu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "uukanshucc",
+      "name": "uukanshu.cc",
+      "hosts": [
+        "uukanshu.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/uukanshuCc.ts",
+      "export": "uukanshuCc",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "westnovel",
+      "name": "西方奇幻小说网",
+      "hosts": [
+        "www.westnovel.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/westnovel.ts",
+      "export": "westnovel",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "soxscc",
+      "name": "搜小说",
+      "hosts": [
+        "www.soxscc.net",
+        "www.soxscc.org",
+        "www.soxs.cc",
+        "www.soxscc.cc",
+        "www.soshuwu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/soxscc.ts",
+      "export": "soxscc",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c630shu",
+      "name": "恋上你看书",
+      "hosts": [
+        "www.630shu.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/630shu.ts",
+      "export": "c630shu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "trxs",
+      "name": "www.trxs.cc",
+      "hosts": [
+        "www.trxs.cc",
+        "www.trxs.me",
+        "www.trxs123.com",
+        "www.jpxs123.com",
+        "www.tongrenquan.org",
+        "www.tongrenquan.me",
+        "trxs.cc",
+        "trxs.me",
+        "trxs123.com",
+        "jpxs123.com",
+        "tongrenquan.me",
+        "tongrenquan.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/trxs.ts",
+      "export": "trxs",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c256wxc",
+      "name": "256 文学",
+      "hosts": [
+        "www.256wenku.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/256wxc.ts",
+      "export": "c256wxc",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "fuxiaoshu",
+      "name": "腐小说",
+      "hosts": [
+        "www.fxshu.top"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/fuxiaoshu.ts",
+      "export": "fuxiaoshu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "wanben",
+      "name": "完本神站",
+      "hosts": [
+        "www.wanbengo.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/wanben.ts",
+      "export": "wanben",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "masiro",
+      "name": "真白萌",
+      "hosts": [
+        "masiro.me"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/masiro.ts",
+      "export": "masiro",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "kakuyomu",
+      "name": "カクヨム",
+      "hosts": [
+        "kakuyomu.jp"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/kakuyomu.ts",
+      "export": "kakuyomu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "syosetu",
+      "name": "小説家になろう",
+      "hosts": [
+        "ncode.syosetu.com",
+        "novel18.syosetu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/syosetu.ts",
+      "export": "syosetu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "syosetuorg",
+      "name": "ハーメルン",
+      "hosts": [
+        "syosetu.org",
+        "h.syosetu.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/syosetu.ts",
+      "export": "syosetuOrg",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "houhuayuan",
+      "name": "zhaoze.vip",
+      "hosts": [
+        "zhaoze.vip",
+        "houhuayuan.vip"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/houhuayuan.ts",
+      "export": "houhuayuan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "dushu",
+      "name": "www.dushu.com",
+      "hosts": [
+        "www.dushu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/dushu.ts",
+      "export": "dushu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "tianyabooks",
+      "name": "天涯书库",
+      "hosts": [
+        "www.tianyabooks.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/tianyabooks.ts",
+      "export": "tianyabooks",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "aixdzs",
+      "name": "爱下电子书",
+      "hosts": [
+        "www.aixdzs.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/aixdzs.ts",
+      "export": "aixdzs",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "fantasybooks",
+      "name": "缤纷幻想",
+      "hosts": [
+        "colorful-fantasybooks.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/colorful-fantasybooks.ts",
+      "export": "fantasybooks",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "akatsuki",
+      "name": "暁",
+      "hosts": [
+        "www.akatsuki-novels.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/akatsuki.ts",
+      "export": "akatsuki",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "alphapolis",
+      "name": "ファンタジー小説",
+      "hosts": [
+        "www.alphapolis.co.jp"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/alphapolis.ts",
+      "export": "Alphapolis",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "hongxiuzhao",
+      "name": "红袖招",
+      "hosts": [
+        "hongxiuzhao.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/hongxiuzhao.ts",
+      "export": "hongxiuzhao",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xbyuan",
+      "name": "精华书阁",
+      "hosts": [
+        "www.xbyuan.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/xbyuan.ts",
+      "export": "xbyuan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "qzxsw",
+      "name": "全职小说网",
+      "hosts": [
+        "www.quanzhifashi.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/qzxsw.ts",
+      "export": "qzxsw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "boqugew",
+      "name": "新笔趣阁",
+      "hosts": [
+        "www.boqugew.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/boqugew.ts",
+      "export": "boqugew",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "qbtrcc",
+      "name": "全本同人小说",
+      "hosts": [
+        "www.qbtr.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/qbtrcc.ts",
+      "export": "qbtrcc",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "guidaye",
+      "name": "鬼大爷网",
+      "hosts": [
+        "b.guidaye.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/guidaye.ts",
+      "export": "guidaye",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "banxia",
+      "name": "www.xbanxia.la",
+      "hosts": [
+        "www.xbanxia.la",
+        "www.xbanxia.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/banxia.ts",
+      "export": "banxia",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "zgzl",
+      "name": "www.zgzl.net",
+      "hosts": [
+        "www.zgzl.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/zgzl.ts",
+      "export": "zgzl",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "zhenhunxiaoshuo",
+      "name": "www.zhenhunxiaoshuo.com",
+      "hosts": [
+        "www.zhenhunxiaoshuo.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/zhenhunxiaoshuo.ts",
+      "export": "zhenhunxiaoshuo",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "i52shuku",
+      "name": "www.52shuku.vip",
+      "hosts": [
+        "www.52shuku.vip"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [
+        ".*\\/.*_\\d+\\.html"
+      ],
+      "source": "rules/onePage/52shuku.ts",
+      "export": "i52shuku",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "bixiange",
+      "name": "m.bixiange.me",
+      "hosts": [
+        "m.bixiange.me"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/bixiange.ts",
+      "export": "bixiange",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "yiqushuzhai",
+      "name": "www.rmkbr.com",
+      "hosts": [
+        "www.rmkbr.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/yiqushuzhai.ts",
+      "export": "yiqushuzhai",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "dubuxiaoshuo",
+      "name": "www.dbxsd.com",
+      "hosts": [
+        "www.dbxsd.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/dubuxiaoshuo.ts",
+      "export": "dubuxiaoshuo",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "wanxiangshucheng",
+      "name": "wxscs.com",
+      "hosts": [
+        "wxscs.com",
+        "www.wxscs.com",
+        "wxsck.com",
+        "www.wxsck.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/wanxiangshucheng.ts",
+      "export": "wanxiangshucheng",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "biquge345",
+      "name": "www.biquge345.com",
+      "hosts": [
+        "www.biquge345.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/biquge345.ts",
+      "export": "biquge345",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "biqugecc",
+      "name": "www.beqege.cc",
+      "hosts": [
+        "www.beqege.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/biqugecc.ts",
+      "export": "biqugecc",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "mjyhb",
+      "name": "m.mjyhb.com",
+      "hosts": [
+        "m.mjyhb.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/mjyhb.ts",
+      "export": "mjyhb",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "flydreams",
+      "name": "m.fly-dreams.com",
+      "hosts": [
+        "m.fly-dreams.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/fly-dreams.ts",
+      "export": "flydreams",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "dishuge",
+      "name": "www.23dishuge.com",
+      "hosts": [
+        "www.23dishuge.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/dishuge.ts",
+      "export": "dishuge",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c69shuba",
+      "name": "69 书吧",
+      "hosts": [
+        "www.69hsw.com",
+        "www.69hao.com",
+        "www.69hsz.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/69shuba.ts",
+      "export": "c69shuba",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "shauthor",
+      "name": "m.shauthor.com",
+      "hosts": [
+        "m.shauthor.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/shauthor.ts",
+      "export": "shauthor",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "chenkuan",
+      "name": "m.chenkuan.com",
+      "hosts": [
+        "m.chenkuan.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/chenkuan.ts",
+      "export": "chenkuan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "baihexs",
+      "name": "百合小说网",
+      "hosts": [
+        "m.baihexs.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/baihexs.ts",
+      "export": "baihexs",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "novelup",
+      "name": "Novel Up Plus",
+      "hosts": [
+        "novelup.plus"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/original/novelup.ts",
+      "export": "novelup",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "ptwxz",
+      "name": "飘天文学网",
+      "hosts": [
+        "www.piaotia.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/ptwxz.ts",
+      "export": "ptwxz",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "wanben_onepagewithmultiindexpage",
+      "name": "m.wanbengo.com",
+      "hosts": [
+        "m.wanbengo.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/wanben.ts",
+      "export": "wanben",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "biqugetw",
+      "name": "www.biquge.tw",
+      "hosts": [
+        "www.biquge.tw"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/biqugetw.ts",
+      "export": "biqugetw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xszj",
+      "name": "m.xszj.org",
+      "hosts": [
+        "m.xszj.org",
+        "xszj.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/xszj.ts",
+      "export": "xszj",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "haitangshuwu",
+      "name": "www.fdhxs.com",
+      "hosts": [
+        "www.fdhxs.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/haitangshuwu.ts",
+      "export": "haitangshuwu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xianfengxiaoshuo",
+      "name": "www.xfxs1.com",
+      "hosts": [
+        "www.xfxs1.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/xianfengxiaoshuo.ts",
+      "export": "xianfengxiaoshuo",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "ruochu",
+      "name": "www.ruochu.com",
+      "hosts": [
+        "www.ruochu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/original/ruochu.ts",
+      "export": "ruochu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xiaoshuodaquan",
+      "name": "书书网",
+      "hosts": [
+        "www.1pwx.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/1pwx.ts",
+      "export": "xiaoshuodaquan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "wenku8",
+      "name": "轻小说文库",
+      "hosts": [
+        "www.wenku8.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/wenku8.ts",
+      "export": "wenku8",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "yibige",
+      "name": "一笔阁",
+      "hosts": [
+        "www.yibige.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/yibige.ts",
+      "export": "yibige",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "washuge",
+      "name": "望书阁",
+      "hosts": [
+        "www.wangshugu.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/washuge.ts",
+      "export": "washuge",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "shencou",
+      "name": "神凑轻小说",
+      "hosts": [
+        "www.shencou.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/shencou.ts",
+      "export": "shencou",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "jingcaiyuedu6",
+      "name": "精彩小说网",
+      "hosts": [
+        "jingcaiyuedu6.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/jingcaiyuedu6.ts",
+      "export": "jingcaiyuedu6",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "uaa",
+      "name": "www.uaa.com",
+      "hosts": [
+        "www.uaa.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/uaa.ts",
+      "export": "uaa",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c18kanshu",
+      "name": "18 看书",
+      "hosts": [
+        "www.18kanshu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/18kanshu.ts",
+      "export": "c18kanshu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "i60ksw",
+      "name": "60 看书",
+      "hosts": [
+        "www.60ksw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/60ksw.ts",
+      "export": "i60ksw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "penana",
+      "name": "www.penana.com",
+      "hosts": [
+        "www.penana.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/original/penana.ts",
+      "export": "penana",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "czbooks",
+      "name": "czbooks.net",
+      "hosts": [
+        "czbooks.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/czbooks.ts",
+      "export": "czbooks",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xiaoshuowu",
+      "name": "小说屋",
+      "hosts": [
+        "www.xiaoshuowu.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/twoPage/xiaoshuowu.ts",
+      "export": "xiaoshuowu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "twkan",
+      "name": "twkan.com",
+      "hosts": [
+        "twkan.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/twkan.ts",
+      "export": "twkan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c69shu",
+      "name": "www.69shuba.com",
+      "hosts": [
+        "www.69shuba.com",
+        "69shuba.cx"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/69shu.ts",
+      "export": "c69shu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xbookcn",
+      "name": "book.xbookcn.net",
+      "hosts": [
+        "book.xbookcn.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/xbookcn.ts",
+      "export": "xbookcn",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c69yuedu",
+      "name": "69阅读",
+      "hosts": [
+        "www.69yuedu.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/69yuedu.ts",
+      "export": "c69yuedu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "haiwaishubao",
+      "name": "www.haiwaishubao.com",
+      "hosts": [
+        "www.haiwaishubao.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePageWithMultiIndexPage/haiwaishubao.ts",
+      "export": "haiwaishubao",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "bqu9",
+      "name": "www.bqu9.cc",
+      "hosts": [
+        "www.bqu9.cc",
+        "www.bq06.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "bqu9",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "common",
+      "name": "笔趣阁通用",
+      "hosts": [
+        "www.666biquge.com",
+        "www.xiunews.com",
+        "www.23xsww.cc",
+        "www.biququ.com",
+        "www.ddyveshu.cc",
+        "www.81book.com",
+        "www.81zw.com",
+        "www.fuguoduxs.com",
+        "www.shubaowa.org",
+        "www.aixiaxs.net",
+        "www.banzhuer.org",
+        "www.007zw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "common",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "mht",
+      "name": "棉花糖小说网",
+      "hosts": [
+        "www.mht99.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/mht.ts",
+      "export": "mht",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xbiquge",
+      "name": "www.xsbiquge.la",
+      "hosts": [
+        "www.xsbiquge.la",
+        "www.xbiquge.tw"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "xbiquge",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "luoqiuzw",
+      "name": "落秋中文",
+      "hosts": [
+        "www.luoqiuzw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "luoqiuzw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "dijiubook",
+      "name": "dijiuben.com",
+      "hosts": [
+        "dijiuben.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "dijiubook",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "biquwx",
+      "name": "笔趣阁",
+      "hosts": [
+        "www.biquzw.la"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "biquwx",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c25zw",
+      "name": "25 中文网",
+      "hosts": [
+        "www.i25zw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "c25zw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "tycqxs",
+      "name": "天域小说网",
+      "hosts": [
+        "www.tycqzw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "tycqxs",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "ranwen",
+      "name": "燃文小说",
+      "hosts": [
+        "www.ranwen.la"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "ranwen",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "lusetxt",
+      "name": "www.lvsewx.com",
+      "hosts": [
+        "www.lvsewx.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "lusetxt",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "b5200",
+      "name": "笔趣阁",
+      "hosts": [
+        "www.biquge5200.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "b5200",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "yqxs",
+      "name": "言情小说",
+      "hosts": [
+        "www.yqxsge.cc"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "yqxs",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "bxwx333",
+      "name": "笔下文学 333",
+      "hosts": [
+        "www.bixia3.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "bxwx333",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xbiqugela",
+      "name": "新笔趣阁",
+      "hosts": [
+        "www.ibiquge.la"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "xbiqugeLa",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "yruan",
+      "name": "亿软网",
+      "hosts": [
+        "www.yiruan.la"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "yruan",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "shuquge",
+      "name": "书趣阁",
+      "hosts": [
+        "www.ishuquge.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "shuquge",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "gebiqu",
+      "name": "阁笔趣",
+      "hosts": [
+        "www.gashuw.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "gebiqu",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "lewenn",
+      "name": "乐文小说网",
+      "hosts": [
+        "www.lewenn.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "lewenn",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xyb3",
+      "name": "www.xyb3.net",
+      "hosts": [
+        "www.xyb3.net"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "xyb3",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "xinwanben",
+      "name": "完本神站",
+      "hosts": [
+        "www.wanben.info"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/nextPage.ts",
+      "export": "xinwanben",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "ywggzy",
+      "name": "笔下文学",
+      "hosts": [
+        "www.ywggzy.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/nextPage.ts",
+      "export": "ywggzy",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "mijiashe",
+      "name": "38 看书",
+      "hosts": [
+        "www.mijiashe.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/nextPage.ts",
+      "export": "mijiashe",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "znlzd",
+      "name": "m.kuangguwenhua.com",
+      "hosts": [
+        "m.kuangguwenhua.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/multiIndexNextPage.ts",
+      "export": "znlzd",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "c226ks",
+      "name": "266 看书",
+      "hosts": [
+        "www.266ks.com"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/multiIndexNextPage.ts",
+      "export": "c226ks",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "la42zw",
+      "name": "笔趣阁",
+      "hosts": [
+        "www.42zw.la"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/biquge/onePage.ts",
+      "export": "la42zw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    },
+    {
+      "id": "zjsw",
+      "name": "www.zjsw.org",
+      "hosts": [
+        "www.zjsw.org"
+      ],
+      "book_patterns": [],
+      "book_exclude_patterns": [],
+      "source": "rules/onePage/zjsw.ts",
+      "export": "zjsw",
+      "status": "unverified",
+      "mode": "text",
+      "license": "AGPL-3.0-or-later"
+    }
+  ],
+  "excluded": [
+    {
+      "symbol": "uukanshu",
+      "hosts": [
+        "www.uukanshu.com"
+      ],
+      "reason": "Invokes arbitrary page callback"
+    },
+    {
+      "symbol": "dizishu",
+      "hosts": [
+        "www.dizishu.cc",
+        "www.qu-la.com"
+      ],
+      "reason": "Evaluates page-supplied JavaScript"
+    },
+    {
+      "symbol": "alicesw",
+      "hosts": [
+        "pornhulu.com",
+        "xn--yhqvcx66l.xnxnxn7.xyz",
+        "321dh.org",
+        "www.alicesw.com"
+      ],
+      "reason": "Requires rendered frame integration"
+    },
+    {
+      "symbol": "linovelib",
+      "hosts": [
+        "www.linovelib.com"
+      ],
+      "reason": "Requires page scripts, frames and custom font integration"
+    },
+    {
+      "symbol": "wlinovelib",
+      "hosts": [
+        "www.bilinovel.com"
+      ],
+      "reason": "Requires page scripts, frames and custom font integration"
+    }
+  ],
+  "limitations": [
+    "Rules are imported, not verified on every live site.",
+    "Only accessible text is supported; font-obfuscated and image chapters require a dedicated OCR adapter.",
+    "Only the current book-page host can receive parser requests."
+  ]
+}

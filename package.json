@@ -1,0 +1,22 @@
+{
+  "name": "novelist-rule-engine",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "build:engine": "node scripts/build_engine.mjs",
+    "build:jinjiang": "node scripts/build_jinjiang.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  },
+  "dependencies": {
+    "@noble/hashes": "1.8.0",
+    "@oovz/esearch-ocr": "8.4.4",
+    "crypto-js": "4.2.0",
+    "css-tree": "3.2.1",
+    "fflate": "0.8.3",
+    "onnxruntime-web": "1.29.0"
+  },
+  "license": "AGPL-3.0-or-later"
+}

@@ -1,0 +1,1831 @@
+import {
+  getAttachment,
+  getRandomName,
+} from "../../../lib/attachments";
+import { AttachmentClass } from "../../../main/Attachment";
+import { cleanDOM } from "../../../lib/cleanDOM";
+import { getHtmlDOM, gfetch, ggetHtmlDOM } from "../../../lib/http";
+import { sleep } from "../../../lib/misc";
+import { rm, rms } from "../../../lib/dom";
+import { introDomHandle } from "../../../lib/rule";
+import { log } from "../../../log";
+import { ReferrerMode, Status } from "../../../main/main";
+import { Chapter, ChapterAbortError } from "../../../main/Chapter";
+import { Book, BookAdditionalMetadate } from "../../../main/Book";
+import { BaseRuleClass, ChapterParseObject } from "../../../rules";
+import { SaveBook } from "../../../save/save";
+import { retryLimit } from "../../../setting";
+import { buildFontTableViaOCR } from "../../lib/jjwxcFontDecode";
+import { UnsafeWindow } from "../../../global";
+import { _GM_xmlhttpRequest } from "../../../lib/GM";
+
+import * as csstree from "css-tree";
+import * as CryptoJS from "crypto-js";
+
+type JJWindow = UnsafeWindow & { getCookie: (key: string) => string };
+
+const AUTHOR_SAY_PREFIX = "作者有话说："; // before it was "-".repeat(20)
+const JJ_LOGIN_ABORT_MESSAGE =
+  "未登录晋江或未填写 Android token，VIP 章节已跳过。请先登录网页，或在设置中填写 token。";
+function normalizeJjwxcToken(token: string): string {
+  return String(token).replace(/undefined|token=|\s|&.*$/g, "").trim();
+}
+
+function isValidJjwxcToken(token: string): boolean {
+  return /^\d+_[\w\d]{16,}$/.test(token);
+}
+
+function getJjwxcTokenFromOptions(): string | null {
+  const raw = (unsafeWindow as UnsafeWindow).tokenOptions?.Jjwxc;
+  if (!raw) {
+    return null;
+  }
+  const token = normalizeJjwxcToken(
+    typeof raw === "string" ? raw : raw.token ?? ""
+  );
+  return token.length > 0 ? token : null;
+}
+
+function getCookieValue(name: string): string | null {
+  const prefix = `${name}=`;
+  const found = document.cookie
+    .split(";")
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(prefix));
+  if (!found) {
+    return null;
+  }
+  try {
+    return decodeURIComponent(found.slice(prefix.length));
+  } catch {
+    return found.slice(prefix.length);
+  }
+}
+
+function isJjwxcLoggedIn(): boolean {
+  if (getJjwxcTokenFromOptions()) {
+    return true;
+  }
+  // 旧版页面用 #jj_login 表示未登录；现站点改为 readerid cookie / loginUserDiv
+  if (document.getElementById("jj_login")) {
+    return false;
+  }
+  if (getCookieValue("readerid")) {
+    return true;
+  }
+  // 现站点已登录后页头会渲染 span.readerid（readerid cookie 为 httpOnly，JS 读不到）
+  const readeridSpan = document.querySelector("span.readerid");
+  if (readeridSpan?.textContent?.trim()) {
+    return true;
+  }
+  const loginUserDiv = document.getElementById("loginUserDiv");
+  if (loginUserDiv) {
+    const style = loginUserDiv.getAttribute("style") ?? "";
+    if (/display\s*:\s*none/i.test(style)) {
+      return false;
+    }
+    if (loginUserDiv.textContent?.trim()) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function setJjwxcToken(token: string): string | null {
+  const normalized = normalizeJjwxcToken(token);
+  if (!normalized) {
+    return null;
+  }
+  const tokenOptions =
+    typeof (unsafeWindow as UnsafeWindow).tokenOptions === "object"
+      ? (unsafeWindow as UnsafeWindow).tokenOptions
+      : undefined;
+  (unsafeWindow as UnsafeWindow).tokenOptions = {
+    ...(tokenOptions ?? {}),
+    Jjwxc: normalized,
+  } as NonNullable<UnsafeWindow["tokenOptions"]>;
+  return normalized;
+}
+
+export class Jjwxc extends BaseRuleClass {
+  public constructor() {
+    super();
+    this.attachmentMode = "TM";
+    this.concurrencyLimit = 1;
+    this.charset = "GB18030";
+    function encode(data: string) {
+      const key = CryptoJS.enc.Utf8.parse("KW8Dvm2N");
+      const iv = CryptoJS.enc.Utf8.parse("1ae2c94b");
+
+      const encrypted = CryptoJS.DES.encrypt(data, key, {
+        iv: iv,
+        padding: CryptoJS.pad.Pkcs7,
+        mode: CryptoJS.mode.CBC
+      });
+
+      return encrypted.toString(); //encrypted.ciphertext.toString(CryptoJS.enc.Base64));
+    }
+
+    function rd() {
+      const n = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+      let s = "";
+      for (let i = 0; i < 20; i++) {
+        const r = Math.floor(Math.random() * 10);
+        s += n[r];
+      }
+      return s;
+    }
+
+    function generateAndroidId() {
+      const chars = '0123456789abcdef';
+      let androidId = '';
+      for (let i = 0; i < 16; i++) {
+        const r = Math.floor(Math.random() * 16);
+        androidId += chars[r];
+      }
+      return androidId;
+    }
+
+    function getDialogElement<T extends HTMLElement>(id: string): T | null {
+      return (document.querySelector('#nd-shadow-host')?.shadowRoot?.querySelector('#' + id) ?? document.getElementById(id)) as T | null;
+    }
+
+    function checkLogin(account: string, password: string, verificationCode: string) {
+      if (account === "" || password === "") {
+        alert("账号或密码不能为空");
+        return 0;
+      } else if (verificationCode === "") {
+        return 1;
+      } else {
+        return 2;
+      }
+    }
+
+    async function login() {
+      const manualToken = normalizeJjwxcToken(
+        (getDialogElement("nd-jj-manual-token") as HTMLInputElement)
+          ?.value ?? ""
+      );
+      if (manualToken.length > 0) {
+        const savedToken = setJjwxcToken(manualToken);
+        if (savedToken) {
+          const tokenElement = getDialogElement("nd-jj-token");
+          if (tokenElement) {
+            tokenElement.textContent = savedToken;
+          }
+          alert("token 保存成功");
+        }
+        return;
+      }
+
+      const account = (getDialogElement("nd-jj-account") as HTMLInputElement)?.value;
+      const password = (getDialogElement("nd-jj-password") as HTMLInputElement)?.value;
+      const verificationCode = (getDialogElement("nd-jj-verificationCode") as HTMLInputElement)?.value;
+      const CheckLogin = checkLogin(account, password, verificationCode);
+      let t = 'phone';
+      if (account.indexOf("@") !== -1) {
+        t = 'email';
+      }
+      if (CheckLogin != 0) {
+        const en = encode(password);
+        const id = rd() + ":" + generateAndroidId() + "d4:";
+        const sign = encode(Date.now() + "_" + id + "_");
+        let loginUrl = `https://app.jjwxc.org/androidapi/login?versionCode=402&loginName=${encodeURIComponent(account)}&encode=1&loginPassword=${encodeURIComponent(en)}&sign=${encodeURIComponent(sign)}&identifiers=${encodeURIComponent(id)}&autologin=1`;
+        const headers = {
+          Host: "app.jjwxc.org",
+          'User-Agent': `Mobile ${Date.now()}`,
+          'Accept-Encoding': 'gzip',
+          'Keep-Alive': '300',
+          'Content-Type': '',
+          'Accept': '',
+          'Sec-Fetch-Site': '',
+          'Sec-Fetch-Mode': '',
+          'Sec-Fetch-Dest': '',
+          'Accept-Language': '',
+
+        };
+        interface LoginResponse {
+          code: string;
+          message: string;
+          data: Array<{
+            type: string;
+            text: string;
+          }>;
+          token: string;
+        }
+        interface CodeResponse {
+          code: string;
+          message: string;
+          data: {
+            message: string;
+          };
+        }
+        if (CheckLogin === 1) {
+          const resJson: LoginResponse = await new Promise((resolve) => {
+            _GM_xmlhttpRequest({
+              url: loginUrl,
+              headers: headers,
+              method: "GET",
+              anonymous: true,
+              fetch: true,
+              responseType: "json",
+              onload: function (response) {
+                const resultI: LoginResponse = typeof response.response === "object" ? response.response : JSON.parse((response.responseText || response.response) as string);
+                log.debug(`LoginResponse url ${loginUrl}`);
+                if (response.status === 200) {
+                  resolve(resultI);
+                } else {
+                  log.error(`LoginResponse url ${loginUrl} response status = ${response.status}`);
+                  resolve(resultI);
+                }
+              },
+            });
+          });
+          if (resJson.code == "221003") {
+            const verifyUrl = "https://app.jjwxc.org//appDevicesecurityAndroid/getDeviceSecurityCode";
+            const body = `versionCode=402&username=${encodeURIComponent(account)}&checktype=${t}`;
+            const responseJson: CodeResponse = await new Promise((resolve) => {
+              _GM_xmlhttpRequest({
+                url: verifyUrl,
+                headers: headers,
+                method: "POST",
+                data: body,
+                anonymous: true,
+                responseType: "json",
+                // fetch: true,
+                onload: function (response) {
+                  const resultI: CodeResponse = typeof response.response === "object" ? response.response : JSON.parse((response.responseText || response.response) as string);
+                  log.debug(`CodeResponse url ${verifyUrl}`);
+                  log.debug(`${response.responseText}`);
+                  log.debug(`${body}`);
+                  if (response.status === 200) {
+                    resolve(resultI);
+                  } else {
+                    log.error(`CodeResponse url ${verifyUrl} response status = ${response.status}`);
+                    resolve(resultI);
+                  }
+                },
+              });
+            });
+            let msg = responseJson.data ? responseJson.data.message : "";
+            if (!msg) msg = responseJson.message;
+            alert(msg);
+          } else {
+            const token = setJjwxcToken(resJson.token ?? "");
+            if (token) {
+              const tokenElement = getDialogElement("nd-jj-token");
+              if (tokenElement) {
+                tokenElement.textContent = token;
+              }
+              alert("登录成功，token 已更新");
+            } else {
+              alert(resJson.message);
+            }
+          }
+        } else if (CheckLogin === 2) {
+          loginUrl = loginUrl + "&checktype=" + t + "&checkdevicecode=" + verificationCode;
+          const tokenJson: LoginResponse = await new Promise((resolve) => {
+            _GM_xmlhttpRequest({
+              url: loginUrl,
+              headers: headers,
+              method: "GET",
+              anonymous: true,
+              responseType: "json",
+              fetch: true,
+              onload: function (response) {
+                const resultI: LoginResponse = typeof response.response === "object" ? response.response : JSON.parse((response.responseText || response.response) as string);
+                log.debug(`LoginResponse url ${loginUrl}`);
+                if (response.status === 200) {
+                  resolve(resultI);
+                } else {
+                  log.error(`LoginResponse url ${loginUrl} response status = ${response.status}`);
+                  resolve(resultI);
+                }
+              },
+            });
+          });
+          const token = setJjwxcToken(tokenJson.token ?? "");
+          const tokenelement = getDialogElement("nd-jj-token");
+          if (tokenelement && token) {
+            tokenelement.textContent = token;
+          }
+          if (!token) {
+            alert(tokenJson.message ?? "登录失败，请检查账号密码和验证码");
+          }
+        }
+      }
+    }
+
+    function openTokenDialog() {
+      const shadowRoot = document.querySelector('#nd-shadow-host')?.shadowRoot;
+      if (!shadowRoot) {
+        alert("无法打开token对话框，请刷新页面重试");
+        return;
+      }
+      const existingToken = getJjwxcTokenFromOptions() ?? "";
+
+      const backdrop = document.createElement('div');
+      backdrop.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:100000;';
+      shadowRoot.appendChild(backdrop);
+
+      const page = document.createElement('div');
+      page.innerHTML = `
+        <h2 style="margin-top:0;font-size:1.25rem;">JJ获取token</h2>
+        <div style="display:flex;flex-direction:column;gap:16px;">
+            <mdui-text-field id="nd-jj-manual-token" label="已有token（可直接粘贴保存）" value="${existingToken}" variant="outlined"></mdui-text-field>
+            <mdui-text-field id="nd-jj-account" label="账号" required variant="outlined"></mdui-text-field>
+            <mdui-text-field id="nd-jj-password" label="密码" type="password" required variant="outlined"></mdui-text-field>
+            <mdui-text-field id="nd-jj-verificationCode" label="验证码" variant="outlined"></mdui-text-field>
+            <div style="text-align:right;">
+              <mdui-button id="nd-jj-login" variant="filled">登录/保存token</mdui-button>
+            </div>
+        </div>
+        <h3 style="font-size:1rem;margin-top:16px;">生成的Token:</h3>
+        <p id="nd-jj-token" style="word-break:break-all;opacity:0.8;user-select:all;">${existingToken}</p>
+      `;
+
+      page.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);padding:24px;background-color:rgb(var(--mdui-color-surface-container-high,236,230,240));color:rgb(var(--mdui-color-on-surface,28,27,31));border-radius:16px;box-shadow:0 4px 12px rgba(0,0,0,0.15);z-index:100001;min-width:300px;max-width:90vw;max-height:90vh;overflow-y:auto;';
+
+      const close = () => {
+        page.remove();
+        backdrop.remove();
+      };
+
+      const closeButton = document.createElement('mdui-button');
+      closeButton.innerText = '关闭';
+      closeButton.setAttribute('variant', 'text');
+      closeButton.style.cssText = 'display:block;margin-top:16px;width:100%;';
+      closeButton.addEventListener('click', close);
+      page.appendChild(closeButton);
+
+      backdrop.addEventListener('click', close);
+
+      shadowRoot.appendChild(page);
+
+      shadowRoot.querySelector<HTMLElement>("#nd-jj-login")?.addEventListener('click', () => login());
+    }
+
+    function injectTokenButton(): boolean {
+      const shadowRoot = document.querySelector('#nd-shadow-host')?.shadowRoot;
+      if (!shadowRoot) return false;
+      if (shadowRoot.querySelector("#nd-jj-token-entry")) {
+        return true;
+      }
+      const firstChild = shadowRoot.querySelector('#nd-setting-tab-1')?.firstElementChild;
+      if (!firstChild || !firstChild.parentNode) {
+        return false;
+      }
+      const button = document.createElement('mdui-button');
+      button.id = "nd-jj-token-entry";
+      button.innerText = '获取token';
+      button.setAttribute('variant', 'tonal');
+      button.style.marginBottom = '16px';
+      button.style.width = '100%';
+      firstChild.parentNode.insertBefore(button, firstChild);
+      button.addEventListener('click', () => {
+        // Because shadow dom takes over click sometimes, we can delay logic
+        openTokenDialog();
+      });
+      return true;
+    }
+
+    if (!injectTokenButton()) {
+      let isObservingShadow = false;
+      const observer = new MutationObserver(() => {
+        if (injectTokenButton()) {
+          observer.disconnect();
+        } else {
+          const host = document.querySelector('#nd-shadow-host');
+          if (host && host.shadowRoot && !isObservingShadow) {
+            observer.disconnect();
+            observer.observe(host.shadowRoot, { childList: true, subtree: true });
+            isObservingShadow = true;
+          }
+        }
+      });
+      
+      const host = document.querySelector('#nd-shadow-host');
+      if (host && host.shadowRoot) {
+        observer.observe(host.shadowRoot, { childList: true, subtree: true });
+        isObservingShadow = true;
+      } else {
+        observer.observe(document.body, { childList: true, subtree: true });
+      }
+    }
+  }  
+
+  /**
+   * Extract protagonist and co-star information using semantic role detection
+   * Uses CSS classes: role_pic_1 (protagonist), role_pic_0 (co-star)
+   */
+  private extractProtagonistInfo(): { protagonist?: string; costar?: string; other?: string } {
+    try {
+      const result: { protagonist?: string; costar?: string; other?: string } = {};
+      
+      // Look for protagonist info in smallreadbody divs that contain character information
+      const smallreadBodyDivs = Array.from(document.querySelectorAll('.smallreadbody'));
+      
+      for (const smallreadDiv of smallreadBodyDivs) {
+        // Find the div that contains character information (role icons and character names)
+        const hasCharacterInfo = smallreadDiv.querySelector('.role_icon_out') || 
+                                 smallreadDiv.querySelector('.character_name') ||
+                                 smallreadDiv.querySelector('.role_pic_frame');
+        
+        if (hasCharacterInfo) {
+          const characterFrames = Array.from(smallreadDiv.querySelectorAll('.role_pic_frame'));
+          const protagonistNames: string[] = [];
+          const costarNames: string[] = [];
+          
+          characterFrames.forEach((frame, index) => {
+            const characterNameDiv = frame.querySelector('.character_name');
+            if (characterNameDiv && characterNameDiv.textContent?.trim()) {
+              const characterName = characterNameDiv.textContent.trim();
+              
+              // check role_pic
+              const rolePicSpan = frame.querySelector('[class*="role_pic_"]');
+              let isProtagonist = false;
+              let isCostar = false;
+              
+              if (rolePicSpan) {
+                // Check for protagonist class (role_pic_1)
+                if (rolePicSpan.classList.contains('role_pic_1')) {
+                  isProtagonist = true;
+                }
+                // Check for co-star class (role_pic_0)  
+                else if (rolePicSpan.classList.contains('role_pic_0')) {
+                  isCostar = true;
+                }
+              }
+              
+              // Classify characters based on role icons
+              if (isProtagonist) {
+                protagonistNames.push(characterName);
+                console.debug(`[JJWXC] 检测到主角: ${characterName}`);
+              } else if (isCostar) {
+                costarNames.push(characterName);
+                console.debug(`[JJWXC] 检测到配角: ${characterName}`);
+              } else {
+                // Fallback: if no clear classification, treat as co-star
+                costarNames.push(characterName);
+                console.debug(`[JJWXC] 未明确分类，归为配角: ${characterName}`);
+              }
+            }
+          });
+          
+          // Assign the extracted names
+          if (protagonistNames.length > 0 && !result.protagonist) {
+            result.protagonist = protagonistNames.join('、');
+          }
+          
+          if (costarNames.length > 0 && !result.costar) {
+            result.costar = costarNames.join('、');
+          }
+          
+          // If we found character information in this div, we're done
+          break;
+        }
+      }
+      
+      return result;
+    } catch (error) {
+      console.warn('Error extracting protagonist info:', error);
+      return {};
+    }
+  }
+
+  /**
+   * 向简介DOM添加额外的元数据信息
+   */
+  private addAdditionalMetadataToDOM(introDom: HTMLElement): HTMLElement {
+    const descriptionElements: HTMLElement[] = [];
+    
+    // protagonist and co-star
+    const protagonistInfo = this.extractProtagonistInfo();
+    if (protagonistInfo.protagonist || protagonistInfo.costar) {
+      const protagonistDiv = document.createElement('div');
+      protagonistDiv.className = 'metadata-protagonist';
+      let protagonistHTML = '';
+      
+      if (protagonistInfo.protagonist) {
+        protagonistHTML += `<strong>主角：</strong>${protagonistInfo.protagonist}`;
+      }
+      
+      if (protagonistInfo.costar) {
+        if (protagonistHTML) protagonistHTML += '<br>';
+        protagonistHTML += `<strong>配角：</strong>${protagonistInfo.costar}`;
+      }
+      
+      protagonistDiv.innerHTML = protagonistHTML;
+      descriptionElements.push(protagonistDiv);
+    }
+    
+    // "一句话简介", "立意", and "其他" from smallreadbody divs
+    const smallreadBodyDivs = Array.from(document.querySelectorAll('.smallreadbody'));
+    
+    for (const smallreadDiv of smallreadBodyDivs) {
+      // Look for the div that contains metadata spans
+      const spans = Array.from(smallreadDiv.querySelectorAll('span'));
+      
+      for (const span of spans) {
+        const spanText = span.textContent?.trim() || '';
+        
+        // 一句话简介
+        if (spanText.startsWith('一句话简介：')) {
+          const introText = spanText.replace('一句话简介：', '').trim();
+          if (introText) {
+            const introDiv = document.createElement('div');
+            introDiv.className = 'metadata-intro';
+            introDiv.innerHTML = `<strong>一句话简介：</strong>${introText}`;
+            descriptionElements.push(introDiv);
+          }
+        }
+        
+        // 立意
+        if (spanText.startsWith('立意：')) {
+          const themeText = spanText.replace('立意：', '').trim();
+          if (themeText) {
+            const themeDiv = document.createElement('div');
+            themeDiv.className = 'metadata-theme';
+            themeDiv.innerHTML = `<strong>立意：</strong>${themeText}`;
+            descriptionElements.push(themeDiv);
+          }
+        }
+        
+        // 其它
+        if (spanText.startsWith('其它：')) {
+          const otherText = spanText.replace(/^其它：/, '').trim();
+          if (otherText) {
+            const otherDiv = document.createElement('div');
+            otherDiv.className = 'metadata-other';
+            otherDiv.innerHTML = `<strong>其他：</strong>${otherText}`;
+            descriptionElements.push(otherDiv);
+          }
+        }
+      }
+      
+      // If we found metadata spans, no need to check other divs
+      if (descriptionElements.some(el => 
+        el.className === 'metadata-intro' || 
+        el.className === 'metadata-theme' || 
+        el.className === 'metadata-other'
+      )) {
+        break;
+      }
+    }
+
+    // Append additional metadata to the intro DOM if any were found
+    if (descriptionElements.length > 0) {
+      // Add a styled container for additional metadata
+      const metadataContainer = document.createElement('div');
+      metadataContainer.setAttribute('data-keep', 'style');
+      metadataContainer.style.marginTop = '1.5em';
+      metadataContainer.style.marginBottom = '1.5em';
+      metadataContainer.style.padding = '1.2em';
+      metadataContainer.style.backgroundColor = 'rgba(121, 85, 72, 0.04)';
+      metadataContainer.style.border = '1px solid rgba(121, 85, 72, 0.2)';
+      metadataContainer.style.borderRadius = '8px';
+      metadataContainer.style.color = 'inherit';
+      
+      // Add each metadata element
+      descriptionElements.forEach((element, index) => {
+        element.setAttribute('data-keep', 'style');
+        element.style.lineHeight = '1.6';
+        if (index < descriptionElements.length - 1) {
+          element.style.marginBottom = '0.6em';
+        }
+        metadataContainer.appendChild(element);
+      });
+      
+      introDom.appendChild(metadataContainer);
+    }
+
+    return introDom;
+  }
+
+  public async bookParse() {
+    const bookUrl = document.location.href;
+    const getInformationBlocked = () => {
+      const fl = Array.from(document.querySelectorAll(".smallreadbody")).filter(
+        (div) =>
+          (div as HTMLDivElement).innerText.includes(
+            "文案信息审核未通过，等待作者修改后重新审核"
+          )
+      );
+      return fl.length !== 0;
+    };
+
+    let bookname: string;
+    const additionalMetadate: BookAdditionalMetadate = {};
+    let author = "";
+    let introduction: string | null = null;
+    let introductionHTML: HTMLElement | null = null;
+    let introCleanimages: AttachmentClass[] | null;
+    if (!getInformationBlocked()) {
+      bookname = (
+        document.querySelector('#oneboolt .bigtext') as HTMLElement
+      )?.innerText.trim();
+
+      if (!bookname) {
+        throw new Error("抓取书名出错");
+      }
+
+      author = (
+        document.querySelector("#oneboolt  h2 > a") as HTMLElement
+      )?.innerText ?? (
+        document.querySelector('#oneboolt > .noveltitle > span > a') as HTMLElement
+      )?.innerText;
+      
+      // Enhanced intro processing: convert roles and add metadata before introDomHandle
+      const introDom = document.querySelector("#novelintro")?.cloneNode(true) as HTMLElement;
+      if (introDom) {
+        const enhancedIntroDom = this.addAdditionalMetadataToDOM(introDom);
+        [introduction, introductionHTML, introCleanimages] = await introDomHandle(enhancedIntroDom);
+      } else {
+        [introduction, introductionHTML, introCleanimages] = [null, null, null];
+      }
+      if (introCleanimages) {
+        additionalMetadate.attachments = [...introCleanimages];
+      }
+
+      const coverUrl = (
+        document.querySelector(".noveldefaultimage") as HTMLImageElement
+      )?.src;
+      if (coverUrl) {
+        getAttachment(
+          coverUrl,
+          this.attachmentMode,
+          "cover-",
+          false,
+          getRandomName(),
+          { referrerMode: ReferrerMode.none }
+        )
+          .then((coverClass) => {
+            additionalMetadate.cover = coverClass;
+          })
+          .catch((error) => log.error(error));
+      }
+
+      let tags = (
+        document.querySelector(
+          "table > tbody > tr > td.readtd > div.righttd > ul.rightul > li:nth-child(1) > span:nth-child(2)"
+        ) as HTMLSpanElement
+      )?.innerText.split("-") ?? []; // 文章类型
+      tags = tags.concat(
+        Array.from(
+          document.querySelectorAll("div.smallreadbody:nth-child(3) > span > a")
+        ).map((a) => (a as HTMLAnchorElement).innerText)
+      ); // 内容标签
+      const perspective = (
+        document.querySelector(
+          "table > tbody > tr > td.readtd > div.righttd > ul.rightul > li:nth-child(2)"
+        ) as HTMLLIElement
+      )?.innerText.replace("\n", "").replace("作品视角：", "") ?? ""; // 作品视角
+      // const workStyle = (
+      //   document.querySelector(
+      //     "table > tbody > tr > td.readtd > div.righttd > ul.rightul > li:nth-child(3)"
+      //   ) as HTMLLIElement
+      // ).innerText.replace("\n", "");
+      tags.push(perspective);
+      // tags.push(workStyle);
+      additionalMetadate.tags = tags;
+    } else {
+      window.scrollTo(0, document?.body?.scrollHeight ?? 0);
+      await sleep(3000);
+      bookname = (
+        document.querySelector(
+          "td[id^=comment_] span.coltext > a"
+        ) as HTMLAnchorElement
+      )?.innerText
+        .trim()
+        .replace(/[《》]/g, "");
+      window.scrollTo(0, 0);
+      if (!bookname) {
+        throw new Error("抓取书名出错");
+      }
+      const authorPageUrl = (
+        document.querySelector(
+          "#oneboolt > tbody > tr:nth-child(1) > td > div > h2 > a"
+        ) as HTMLAnchorElement
+      )?.href;
+      if (authorPageUrl) {
+        const authorPage = await getHtmlDOM(authorPageUrl, this.charset);
+        author =
+          (authorPage.querySelector('span[itemprop="name"]') as HTMLSpanElement)
+            ?.innerText ?? author;
+      }
+    }
+
+    const chapters: Chapter[] = [];
+    const trList = document.querySelectorAll("#oneboolt > tbody > tr");
+    let chapterNumber = 0;
+    let sectionNumber = 0;
+    let sectionName = null;
+    let sectionChapterNumber = 0;
+    if (trList.length === 0) {
+      const tr = document.querySelector("div#oneboolt");
+      if (tr) {
+        const chapterName = tr.querySelector("h2")?.innerText.trim() ?? "全一章";
+        const chapterUrl = bookUrl + "&chapterid=1";
+        chapterNumber++;
+        const chapter = new Chapter({
+          bookUrl,
+          bookname,
+          chapterUrl,
+          chapterNumber,
+          chapterName,
+          isVIP: false,
+          isPaid: null,
+          sectionName,
+          sectionNumber,
+          sectionChapterNumber,
+          chapterParse: this.chapterParse,
+          charset: this.charset,
+          options: {},
+        });
+        chapters.push(chapter);
+      }
+    }
+    for (const tr of Array.from(trList)) {
+      if (tr.getAttribute("bgcolor")) {
+        sectionNumber++;
+        sectionChapterNumber = 0;
+        sectionName = (
+          tr.querySelector("b.volumnfont") as HTMLElement
+        )?.innerText.trim();
+      } else if (tr.getAttribute("itemprop")) {
+        chapterNumber++;
+        sectionChapterNumber++;
+        const td = tr.querySelector("td:nth-child(2)");
+        const a = td?.querySelector("a:nth-child(1)");
+        const isLocked = () => {
+          return (td as HTMLElement)?.innerText.trim() === "[锁]";
+        };
+        const isVIP = () => {
+          return !!a?.getAttribute("onclick");
+        };
+
+        if (!isLocked()) {
+          if (isVIP()) {
+            const chapterName = (a as HTMLAnchorElement)?.innerText.trim();
+            const chapterUrl = (a as HTMLAnchorElement)?.getAttribute("rel");
+            if (chapterName && chapterUrl) {
+              const chapter = new Chapter({
+                bookUrl,
+                bookname,
+                chapterUrl,
+                chapterNumber,
+                chapterName,
+                isVIP: isVIP(),
+                isPaid: null,
+                sectionName,
+                sectionNumber,
+                sectionChapterNumber,
+                chapterParse: this.chapterParse,
+                charset: this.charset,
+                options: {},
+              });
+              if (isVIP() && !isJjwxcLoggedIn()) {
+                chapter.status = Status.aborted;
+                chapter.errorMessage = JJ_LOGIN_ABORT_MESSAGE;
+              }
+              chapters.push(chapter);
+            }
+          } else {
+            const chapterName = (a as HTMLAnchorElement)?.innerText.trim();
+            const chapterUrl = (a as HTMLAnchorElement)?.href;
+            const chapter = new Chapter({
+              bookUrl,
+              bookname,
+              chapterUrl,
+              chapterNumber,
+              chapterName,
+              isVIP: isVIP(),
+              isPaid: null,
+              sectionName,
+              sectionNumber,
+              sectionChapterNumber,
+              chapterParse: this.chapterParse,
+              charset: this.charset,
+              options: {},
+            });
+            if (isVIP() && !isJjwxcLoggedIn()) {
+              chapter.status = Status.aborted;
+              chapter.errorMessage = JJ_LOGIN_ABORT_MESSAGE;
+            }
+            chapters.push(chapter);
+          }
+        } else {
+          const chapterName = "[锁]";
+          const chapterUrl = "";
+          const chapter = new Chapter({
+            bookUrl,
+            bookname,
+            chapterUrl,
+            chapterNumber,
+            chapterName,
+            isVIP: false,
+            isPaid: null,
+            sectionName,
+            sectionNumber,
+            sectionChapterNumber,
+            chapterParse: this.chapterParse,
+            charset: this.charset,
+            options: {},
+          });
+          chapter.status = Status.aborted;
+          chapter.errorMessage = "章节已锁定，无法下载。";
+          chapters.push(chapter);
+        }
+      }
+    }
+
+    return new Book({
+      bookUrl,
+      bookname,
+      author,
+      introduction,
+      introductionHTML,
+      additionalMetadate,
+      chapters,
+    });
+  }
+
+  protected async initChapters(
+    book: Book,
+    saveBookObj: SaveBook
+  ): Promise<Chapter[]> {
+    // VIP 章节的“未登录跳过”判定发生在目录构建时，token 可能在那之后才注入或登录。
+    // 每次开始下载前重判一次，把已具备条件的章节恢复为待下载。
+    let restored = 0;
+    if (isJjwxcLoggedIn()) {
+      for (const chapter of book.chapters) {
+        if (chapter.isVIP && chapter.status === Status.aborted) {
+          chapter.status = Status.pending;
+          chapter.errorMessage = null;
+          restored++;
+        }
+      }
+    }
+    if (restored > 0) {
+      log.info(
+        `[jjwxc]检测到已登录/已填写 token，恢复 ${restored} 个此前跳过的 VIP 章节`
+      );
+    }
+    return super.initChapters(book, saveBookObj);
+  }
+
+  public async chapterParse(
+    chapterUrl: string,
+    chapterName: string | null,
+    isVIP: boolean,
+    isPaid: boolean,
+    charset: string,
+    options: object
+  ) {
+    // 每次请求章节都即时检测登录态；不具备条件则按“跳过”处理，不占用重试与失败计数
+    if (isVIP && !isJjwxcLoggedIn()) {
+      throw new ChapterAbortError(JJ_LOGIN_ABORT_MESSAGE);
+    }
+    async function publicChapter(): Promise<ChapterParseObject> {
+      const doc = await getHtmlDOM(chapterUrl, charset);
+      const content = doc.querySelector("div.novelbody > div") as HTMLElement;
+      if (content) {
+        // Extract actual chapter text from paragraph_comment_content div
+        // before removing divs (JJ now wraps chapter text inside a div)
+        const pcc = content.querySelector("#paragraph_comment_content") as HTMLElement | null;
+        if (pcc) {
+          // Move pcc children (text nodes, <p>, <br> etc.) directly into content
+          while (pcc.firstChild) {
+            content.insertBefore(pcc.firstChild, pcc);
+          }
+          pcc.remove();
+        }
+
+        rm("hr", true, content);
+        // #message 是晋江 AJAX 状态占位符：<span id="message" style="display:none">请稍候</span>
+        // （onebook.js 只在点击书名时把它设成“请稍候，正在获取数据”）。它既不是正文也不是
+        // 作者有话说（作者有话说在 #note_danmu_wrapper），但它是 <span>，rm("div") 不会清理，
+        // cleanDOM 也不按 display:none 过滤，导致“请稍候”混入正文末尾。仅当它仍是占位文本时移除。
+        const messageEl = content.querySelector("#message");
+        if (messageEl && /请稍[候后]/.test(messageEl.textContent ?? "")) {
+          messageEl.remove();
+        }
+        const rawAuthorSayDom = content.querySelector("div.danmu_total_str") || content.querySelector("#note_danmu_wrapper");
+        let authorSayDom;
+        let authorSayText;
+        if (rawAuthorSayDom) {
+          const { dom: adom, text: atext } = await cleanDOM(
+            rawAuthorSayDom as HTMLElement,
+            "TM"
+          );
+          [authorSayDom, authorSayText] = [adom, atext];
+        }
+        rm("div", true, content);
+        rms(["@无限好文，尽在晋江文学城"], content);
+        // eslint-disable-next-line prefer-const
+        let { dom, text, images } = await cleanDOM(content, "TM");
+        if (rawAuthorSayDom && authorSayDom && authorSayText) {
+          const hr = document.createElement("hr");
+          authorSayDom.className = "authorSay";
+          dom.appendChild(hr);
+          dom.appendChild(authorSayDom);
+
+          text = text + "\n\n" + AUTHOR_SAY_PREFIX + "\n\n" + authorSayText;
+        }
+        return {
+          chapterName,
+          contentRaw: content,
+          contentText: text,
+          contentHTML: dom,
+          contentImages: images,
+          additionalMetadate: null,
+        };
+      }
+      return {
+        chapterName,
+        contentRaw: null,
+        contentText: null,
+        contentHTML: null,
+        contentImages: null,
+        additionalMetadate: null,
+      };
+    }
+
+    async function vipChapter(): Promise<ChapterParseObject> {
+      function getFontName(doc: Document): string | null {
+        const noveltext = doc.querySelector("div.noveltext");
+        if (!noveltext) {
+          return null;
+        }
+        const classList = noveltext.className.split(/\s+/);
+        const fontClass = classList.find((c) => c.startsWith("jjwxcfont_"));
+        return fontClass || null;
+      }
+
+      function decrypt(doc: Document) {
+        function getDecryptContent() {
+          function getCookie(name: string): null | string {
+            let cookies: string | null = "";
+            const dc = document.cookie;
+            const prefix = name + "=";
+            let begin = dc.indexOf("; " + prefix);
+            if (begin == -1) {
+              begin = dc.indexOf(prefix);
+              if (begin != 0) cookies = null;
+            } else {
+              begin += 2;
+            }
+            let end = document.cookie.indexOf(";", begin);
+            if (end == -1) {
+              end = dc.length;
+            }
+            if (cookies != null) {
+              cookies = unescape(dc.substring(begin + prefix.length, end));
+            }
+            if (cookies == null && name != "token" && name != "managertoken") {
+              const tokenKey = [
+                "readerid",
+                "ubuntu",
+                "ptid",
+                "email",
+                "authorid",
+                "cookietime",
+                "islocaluser",
+                "authorname",
+                "newwindow",
+                "showname",
+                "examineright",
+                "logintype",
+                "certification",
+                "userclosecomment",
+                "shareweibo",
+                "commentfilterversion",
+              ]; //xwb
+              const managerKey = [
+                "managerid",
+                "managertoken",
+                "moderatorName",
+                "isAdmin",
+                "managername",
+                "loginSource",
+                "commentSearch",
+              ];
+              if (tokenKey.indexOf(name) > -1) {
+                let token: null | string | string[] = getCookie("token");
+                const index = tokenKey.indexOf(name);
+                if (token != null) {
+                  token = strdecode(token);
+                  token = token.split("|");
+                  return token[index];
+                }
+              } else if (managerKey.indexOf(name) > -1) {
+                let token: null | string | string[] = getCookie("managertoken");
+                const index = managerKey.indexOf(name);
+                if (token != null) {
+                  token = strdecode(token);
+                  token = token.split("|");
+                  return token[index];
+                }
+              }
+              return null;
+            }
+            return cookies;
+          }
+
+          function strdecode(str: string) {
+            return utf8to16(decode64(str));
+          }
+
+          const base64DecodeChars = [
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+            -1, -1, -1, -1, -1, -1, -1, -1, -1, 62, -1, -1, -1, 63, 52, 53, 54,
+            55, 56, 57, 58, 59, 60, 61, -1, -1, -1, -1, -1, -1, -1, 0, 1, 2, 3,
+            4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21,
+            22, 23, 24, 25, -1, -1, -1, -1, -1, -1, 26, 27, 28, 29, 30, 31, 32,
+            33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49,
+            50, 51, -1, -1, -1, -1, -1,
+          ];
+
+          function decode64(str: string) {
+            let c1, c2, c3, c4;
+            let i, out;
+            const len = str.length;
+            i = 0;
+            out = "";
+            while (i < len) {
+              do {
+                c1 = base64DecodeChars[str.charCodeAt(i++) & 0xff];
+              } while (i < len && c1 == -1);
+              if (c1 == -1) break;
+              do {
+                c2 = base64DecodeChars[str.charCodeAt(i++) & 0xff];
+              } while (i < len && c2 == -1);
+              if (c2 == -1) break;
+              out += String.fromCharCode((c1 << 2) | ((c2 & 0x30) >> 4));
+              do {
+                c3 = str.charCodeAt(i++) & 0xff;
+                if (c3 == 61) return out;
+                c3 = base64DecodeChars[c3];
+              } while (i < len && c3 == -1);
+              if (c3 == -1) break;
+              out += String.fromCharCode(
+                ((c2 & 0xf) << 4) | ((c3 & 0x3c) >> 2)
+              );
+              do {
+                c4 = str.charCodeAt(i++) & 0xff;
+                if (c4 == 61) return out;
+                c4 = base64DecodeChars[c4];
+              } while (i < len && c4 == -1);
+              if (c4 == -1) break;
+              out += String.fromCharCode(((c3 & 0x03) << 6) | c4);
+            }
+            return out;
+          }
+
+          function utf8to16(str: string) {
+            let out, i, c;
+            let char2, char3;
+            out = "";
+            const len = str.length;
+            i = 0;
+            while (i < len) {
+              c = str.charCodeAt(i++);
+              switch (c >> 4) {
+                case 0:
+                case 1:
+                case 2:
+                case 3:
+                case 4:
+                case 5:
+                case 6:
+                case 7:
+                  // 0xxxxxxx
+                  out += str.charAt(i - 1);
+                  break;
+                case 12:
+                case 13:
+                  // 110x xxxx    10xx xxxx
+                  char2 = str.charCodeAt(i++);
+                  out += String.fromCharCode(
+                    ((c & 0x1f) << 6) | (char2 & 0x3f)
+                  );
+                  break;
+                case 14:
+                  // 1110 xxxx   10xx xxxx   10xx xxxx
+                  char2 = str.charCodeAt(i++);
+                  char3 = str.charCodeAt(i++);
+                  out += String.fromCharCode(
+                    ((c & 0x0f) << 12) |
+                    ((char2 & 0x3f) << 6) |
+                    ((char3 & 0x3f) << 0)
+                  );
+                  break;
+              }
+            }
+
+            return out;
+          }
+
+          // https://static.jjwxc.net/scripts/jjcontent-v20250926.js?ver=20250926
+
+          const children = doc.querySelector(
+            "#contentlets, #contentvars"
+          )?.children;
+          if (!children) {
+            throw new Error("获取章节失败");
+          }
+          const data: Record<string, string> = {};
+          Array.from(children).forEach(
+            (item) =>
+            (data[item.getAttribute("name") as string] = item.getAttribute(
+              "value"
+            ) as string)
+          );
+
+          const novelid = parseInt(data["novelid"]);
+          const chapterid = parseInt(data["chapterid"]);
+          const _readerid = getCookie("readerid");
+          if (!_readerid) {
+            throw new Error("无法获取客户号");
+          }
+          const readerid = parseInt(_readerid);
+          const accessKey = data["accessKey"];
+          const convert = (input: string) => {
+            let out = 0;
+            for (let i = 0; i < input.length; i++) {
+              out += input.charCodeAt(i);
+            }
+            return out;
+          };
+          const accessKeyConvert = convert(accessKey);
+
+          // jjcontent.js v20250926 算法（DES → AES、变体选择改为 novelid+chapterid 奇偶）
+          // 旧版 (v20220527) 用 DES + chapterid%2，新版用 AES + (novelid+chapterid)%2
+          // 注意：原脚本里 `if (hash.charCodeAt())` 看似可疑，但 charCodeAt() 默认下标 0，
+          // MD5 hex 首字符必然是 0-9/a-f（charCode 都 > 0），所以 swap 实际恒发生 — 等价于
+          // 直接取 hashSlice 的后 16 当 key、前 16 当 iv。
+          const variantIdx = (novelid + chapterid) % 2;
+          const variants: Array<() => { key: string; iv: string }> = [
+            () => {
+              const _hash = novelid + "." + chapterid + "." + readerid + "." + accessKey;
+              const hash = CryptoJS.MD5(_hash).toString();
+              const sp = accessKeyConvert % hash.length;
+              const sl = hash.slice(sp) + hash.slice(0, sp);
+              // hash.charCodeAt() 恒为正 → swap 前后 16 字节
+              return { key: sl.slice(-16), iv: sl.slice(0, 16) };
+            },
+            () => {
+              const _hash = accessKey + "-" + novelid + "-" + chapterid + "-" + readerid;
+              const hash = CryptoJS.MD5(_hash).toString();
+              const sp = accessKeyConvert % (hash.length + 1);
+              const sl = hash.slice(sp) + hash.slice(0, sp);
+              return { key: sl.slice(-16), iv: sl.slice(0, 16) };
+            },
+          ];
+          const cryptInfoCipher = data["cryptInfo"];
+          let _decrypedtCryptInfo = "";
+          const tryOrder = [variantIdx, 1 - variantIdx];
+          for (const i of tryOrder) {
+            const { key: hk, iv: hiv } = variants[i]();
+            try {
+              _decrypedtCryptInfo = CryptoJS.AES.decrypt(
+                cryptInfoCipher,
+                CryptoJS.enc.Utf8.parse(hk),
+                { iv: CryptoJS.enc.Utf8.parse(hiv) }
+              ).toString(CryptoJS.enc.Utf8);
+            } catch (e) {
+              log.debug(
+                `[jjwxc] cryptInfo AES 解密失败 variant=${i}: ${e instanceof Error ? e.message : String(e)}`
+              );
+              _decrypedtCryptInfo = "";
+            }
+            if (_decrypedtCryptInfo !== "") {
+              break;
+            }
+          }
+          if (!_decrypedtCryptInfo) {
+            throw new Error(
+              "章节内容解码失败：无法解密 cryptInfo，可能晋江网页解密算法已更新，请刷新页面或反馈给开发者"
+            );
+          }
+          interface cryptInfo {
+            time: number;
+            key: string;
+            ver: string;
+          }
+          const decrypedtCryptInfo = JSON.parse(
+            atob(_decrypedtCryptInfo)
+          ) as cryptInfo;
+          const verifyTime = (obj: cryptInfo) => {
+            if (new Date()["getTime"]() / 1000 - obj["time"] > 86400) {
+              throw new Error(
+                "章节内容解码失败，内容生成时间与当前设备时间相差过大，请刷新页面或校准当前设备时间。内容生成时间为:" +
+                new Date(obj["time"] * 1000).toLocaleString()
+              );
+            }
+          };
+          verifyTime(decrypedtCryptInfo);
+          const md5sum = CryptoJS.MD5(
+            decrypedtCryptInfo["key"] + decrypedtCryptInfo["time"] + readerid
+          ).toString();
+          const t =
+            md5sum.slice(accessKeyConvert % md5sum.length) +
+            md5sum.slice(0, accessKeyConvert % md5sum.length);
+          const key = t.slice(0, 16);
+          const iv = t.slice(-16);
+
+          const decryptContent = (() => {
+            try {
+              return CryptoJS.AES.decrypt(
+                data["content"],
+                CryptoJS.enc.Utf8.parse(key),
+                { iv: CryptoJS.enc.Utf8.parse(iv) }
+              ).toString(CryptoJS.enc.Utf8);
+            } catch (e) {
+              throw new Error(
+                `章节内容解码失败：content AES 解密产生无效 UTF-8 数据 (${e instanceof Error ? e.message : String(e)})`,
+                { cause: e }
+              );
+            }
+          })();
+          return decryptContent;
+        }
+
+        const decryptContent = getDecryptContent();
+        const decryptContentDoc = new DOMParser().parseFromString(
+          decryptContent,
+          "text/html"
+        );
+
+        function decryptCssEncrypt() {
+          // 修复CSS加密文本
+          // https://github.com/404-novel-project/novel-downloader/issues/521
+
+          const cssText = Array.from(doc.querySelectorAll("style"))
+            .map((s) => s.textContent)
+            .join("\n");
+          const ast = csstree.parse(cssText);
+
+          csstree.walk(ast, function (node) {
+            if (node.type === "Declaration" && node.property === "content") {
+              const value = (
+                (
+                  node.value as csstree.Value
+                ).children.toArray()?.[0] as csstree.StringNode
+              ).value;
+
+              const selectorList = (
+                this.rule?.prelude as csstree.SelectorList
+              ).children.toArray();
+              for (const s of selectorList) {
+                const _selector = (s as csstree.Selector).children.toArray();
+                const selector = new Map(
+                  _selector.map((sc) => [
+                    sc.type,
+                    (
+                      sc as
+                      | csstree.ClassSelector
+                      | csstree.PseudoElementSelector
+                    ).name,
+                  ])
+                );
+                const classSelector = selector.get("ClassSelector");
+                const pseudoClassSelector = selector.get("PseudoClassSelector");
+
+                if (classSelector && pseudoClassSelector && value) {
+                  const sNode = decryptContentDoc.querySelector(
+                    `.${classSelector}`
+                  );
+                  if (sNode) {
+                    const pNode = sNode.parentNode;
+
+                    const iNode = decryptContentDoc.createElement("span");
+                    iNode.id = `${classSelector}-${pseudoClassSelector}`;
+                    iNode.innerText = value;
+
+                    if (pseudoClassSelector === "before") {
+                      pNode?.insertBefore(iNode, sNode);
+                    } else if (pseudoClassSelector === "after") {
+                      pNode?.insertBefore(iNode, sNode.nextSibling);
+                    }
+                  }
+                }
+              }
+            }
+          });
+
+          csstree.walk(ast, function (node) {
+            if (node.type === "Declaration" && node.property === "display") {
+              const value = (
+                (
+                  node.value as csstree.Value
+                ).children.toArray()?.[0] as csstree.Identifier
+              ).name;
+
+              const selectorList = (
+                this.rule?.prelude as csstree.SelectorList
+              ).children.toArray();
+              for (const s of selectorList) {
+                const _selector = (s as csstree.Selector).children.toArray();
+                const selector = new Map(
+                  _selector.map((sc) => [
+                    sc.type,
+                    (
+                      sc as
+                      | csstree.ClassSelector
+                      | csstree.PseudoElementSelector
+                    ).name,
+                  ])
+                );
+                const classSelector = selector.get("ClassSelector");
+                const pseudoClassSelector = selector.get("PseudoClassSelector");
+
+                if (classSelector && pseudoClassSelector && value === "none") {
+                  decryptContentDoc
+                    .querySelector(`#${classSelector}-${pseudoClassSelector}`)
+                    ?.remove();
+                }
+              }
+            }
+          });
+        }
+        decryptCssEncrypt();
+
+        return decryptContentDoc.body.innerHTML;
+      }
+
+      const doc = await ggetHtmlDOM(chapterUrl, charset);
+      const isPaidF = () => {
+        return !!(
+          !doc.querySelector("#buy_content") &&
+          doc.querySelector("div.noveltext")
+        );
+      };
+
+      if (!isPaidF()) {
+        throw new Error(
+          "当前 VIP 章节未订阅，或页面未返回正文。请确认已购买该章，并已登录网页 / 填写 Android token。"
+        );
+      }
+      const ChapterName = (
+        doc.querySelector("div.noveltext h2") as HTMLElement
+      ).innerText.trim();
+
+        const content = document.createElement("div");
+        content.innerHTML = decrypt(doc);
+        rm("hr", true, content);
+        const rawAuthorSayDom = doc.querySelector(".readsmall");
+        let authorSayDom;
+        let authorSayText;
+        if (rawAuthorSayDom) {
+          rm("hr", true, rawAuthorSayDom as HTMLElement);
+          const { dom: adom, text: atext } = await cleanDOM(
+            rawAuthorSayDom,
+            "TM"
+          );
+          [authorSayDom, authorSayText] = [adom, atext];
+        }
+        rm("div", true, content);
+        rms(["@无限好文，尽在晋江文学城"], content);
+        let {
+          dom: rawDom, // eslint-disable-line
+          text: rawText,
+          images, // eslint-disable-line
+        } = await cleanDOM(content, "TM");
+        if (rawAuthorSayDom && authorSayDom && authorSayText) {
+          const hr = document.createElement("hr");
+          authorSayDom.className = "authorSay";
+          rawDom.appendChild(hr);
+          rawDom.appendChild(authorSayDom);
+
+          rawText = rawText + "\n\n" + AUTHOR_SAY_PREFIX + "\n\n" + authorSayText;
+        }
+
+        let finalDom = rawDom;
+        let finalText = rawText;
+        const fontName = getFontName(doc);
+        if (fontName) {
+          const jjwxcFontTable = await buildFontTableViaOCR(fontName, rawText + rawDom.innerHTML);
+          if (jjwxcFontTable) {
+            const applyFontTable = (text: string) => {
+              let out = text;
+              for (const ch in jjwxcFontTable) {
+                if (Object.prototype.hasOwnProperty.call(jjwxcFontTable, ch)) {
+                  out = out.replaceAll(ch, jjwxcFontTable[ch]);
+                }
+              }
+              return out.replace(/\u200C/g, "");
+            };
+            finalText = applyFontTable(rawText);
+            const replacedDom = document.createElement("div");
+            replacedDom.innerHTML = applyFontTable(rawDom.innerHTML);
+            finalDom = replacedDom;
+            return {
+              chapterName: ChapterName,
+              contentRaw: content,
+              contentText: finalText,
+              contentHTML: finalDom,
+              contentImages: images,
+              additionalMetadate: null,
+            };
+          }
+        }
+        // Font table unavailable; still strip ZWNJ noise
+        finalText = finalText.replace(/\u200C/g, "");
+        const zwnjDom = document.createElement("div");
+        zwnjDom.innerHTML = finalDom.innerHTML.replace(/\u200C/g, "");
+        finalDom = zwnjDom;
+        return {
+          chapterName: ChapterName,
+          contentRaw: content,
+          contentText: finalText,
+          contentHTML: finalDom,
+          contentImages: images,
+          additionalMetadate: null,
+        };
+    }
+    // interface vipChapterInfo {
+    //   downloadContent: ChapterInfo[];
+    // }
+    interface ChapterInfo {
+      code: number | null; //0,
+      chapterId: string; //"39",
+      vipChapterid: string | null; //"25"
+      chapterName: string | null; //"另一种可能",
+      chapterIntro: string | null; //"算是番外吗？",
+      chapterSize: string | null; //"1484",
+      chapterDate: string | null; //"2012-03-17 20:54:01",
+      sayBody: string | null; // 包括营养液等信息
+      sayBodyV2: string | null; // 只包括作者有话说
+      upDown: number | null; //1,
+      update: number | null; //1,
+      content?: string; //"另一种可能\n
+      isvip: number | null; //0,
+      isProtect: number | null; //1,
+      encryptField?: Array<string>;//["content"]
+      encryptType?: string; //"jj",
+      authorid: string; //"376815",
+      autobuystatus: string | null; //"0",
+      noteislock: string | null; //"1"
+      message: string | null; //"[本章节已锁定]"
+      show_saybody_page: string | null; //"1"
+    }
+    let retryTime = 0;
+    function extractKeys(responseHeader: string) {
+      const accessKeyMatch = responseHeader.match(/accesskey:([^\r\n]+)/);
+      const keyStringMatch = responseHeader.match(/keystring:([^\r\n]+)/);
+
+      const accessKey = accessKeyMatch ? accessKeyMatch[1].trim() : "accesskey";
+      const keyString = keyStringMatch ? keyStringMatch[1].trim() : "keystring";
+
+      return { accessKey, keyString };
+    }
+    function decodeVIPResopnce(responseHeader: string, responseText: string) {
+      let v43, v38, dest;
+      const keys = extractKeys(responseHeader);
+      const accessKey = keys.accessKey;
+      const keyString = keys.keyString;
+      // log.debug(`responseHeader: ${responseHeader}`);
+      // log.debug(`decodeVIPResopnce accesskey: ${accessKey}, keyString: ${keyString}`);
+      const content = responseText.trim();
+      const accesskeyLen = accessKey.length;
+      let v9 = 0;
+      const v6 = String(accessKey[accesskeyLen - 1]).charCodeAt(0);
+      for (let i = 0; i < accesskeyLen; i++) {
+        v9 += accessKey[i].charCodeAt(0);
+      }
+      const v15 = v9 % keyString.length;
+      const v17 = Math.floor(v9 / 65);
+      const v18 = keyString.length;
+      if (v17 + v15 > v18) {
+        v43 = keyString.substring(v15, v18);
+      } else {
+        v43 = keyString.substring(v15, v17 + v15);
+      }
+      const v32 = content.length;
+      if ((v6 & 1) !== 0) {
+        v38 = content.substring(v32 - 12, v32);
+        dest = content.substring(0, v32 - 12);
+      } else {
+        v38 = content.substring(0, 12);
+        dest = content.substring(12, content.length);
+      }
+      const key = CryptoJS.MD5(v43 + v38).toString().substring(0, 8);
+      const iv = CryptoJS.MD5(v38).toString().substring(0, 8);
+      const keyHex = CryptoJS.enc.Utf8.parse(key);
+      const ivHex = CryptoJS.enc.Utf8.parse(iv);
+      let result: string;
+      try {
+        const decrypted = CryptoJS.DES.decrypt(dest, keyHex, {
+          iv: ivHex,
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7,
+        });
+        result = decrypted.toString(CryptoJS.enc.Utf8);
+      } catch (e) {
+        log.debug(`decodeVIPResopnce error, 即VIP章节解密失败：${e}`);
+        result = '{"message":"try again!"}';
+      }
+      return result;
+    }
+    interface EncryptKey {
+      code: string;
+      data: {
+        key: string;
+        version: string;
+      };
+      message: string;
+    }
+    function decodeVIPText(text: string, encryptType: string, novel_info: string, user_key?: string) {
+
+      // async function getFockKey() {
+      //   const url = "https://android.jjwxc.net/app.jjwxc/android/AACC/Security/getEncryptKey";
+      //   //data = user_key;
+      //   // method = POST
+      //   //Fock.addKeypool(jSONObject.optString("key"), jSONObject.optString("version"));
+      //   const Key: EncryptKey = await new Promise((resolve) => {
+      //     _GM_xmlhttpRequest({
+      //       url: url,
+      //       headers: {
+      //         //   accept: "application/json",
+      //         referer: "http://android.jjwxc.net?v=402",
+      //         //    not_tip: "updateTime",
+      //         //  "accept-encoding": "gzip",
+      //       },
+      //       method: "POST",
+      //       data:user_key,
+      //       onload: function (response) {
+      //         if (response.status === 200) {
+      //             const resultI: EncryptKey = JSON.parse(
+      //               response.responseText
+      //             );
+      //             resolve(resultI);
+      //         } else {
+      //         const resultI: EncryptKey = JSON.parse(
+      //             `{"code":"${response.status}"}`
+      //           );
+      //           resolve(resultI);
+      //         }
+      //       },
+      //     });
+      //   });
+      // }
+      if (encryptType == 'jj') {
+        const keyHex = CryptoJS.enc.Utf8.parse("KW8Dvm2N");
+        const ivHex = CryptoJS.enc.Utf8.parse("1ae2c94b");
+        const decrypted = CryptoJS.DES.decrypt(text, keyHex, {
+          iv: ivHex,
+          mode: CryptoJS.mode.CBC,
+          padding: CryptoJS.pad.Pkcs7,
+        });
+        return decrypted.toString(CryptoJS.enc.Utf8);
+      }
+      // else if (encryptType == 'yw') {
+      //   const str5 = novel_info;
+      //str4 = JNIPwdUtils.decodeByFock(text, str5);
+      // let str3;
+      // let str4 = "";
+      // try {
+      // Fock.FockResult unlock = Fock.unlock(text, str5);
+      // if (unlock.status == Fock.FockResult.STATUS_SUCCESS) {
+      //   str3 = new String(unlock.data, StandardCharsets.UTF_8);
+      //   try {
+      //     if (!g.E(str3)) {
+      //       str4 = str3;
+      //     }
+      //   } catch (e2) {
+      //     log.error("fock解密失败/additionalKey=" + str5 + "/content=" + text + "/errorStr=" + (e2 as any).toString());
+      //     return;
+      //   }
+      // }
+      //     return str4;
+      //   }
+      // }
+      else {
+        log.error(`unknown encryptType ${encryptType}`);
+        return text;
+      }
+    }
+    async function getChapterByApi(): Promise<ChapterParseObject> {
+      let chapterGetInfoUrl = chapterUrl.replaceAll("id", "Id");
+      chapterGetInfoUrl = chapterGetInfoUrl.replace(
+        "http://www.jjwxc.net/onebook.php?",
+        "https://app.jjwxc.net/androidapi/chapterContent?"
+      );
+      chapterGetInfoUrl = chapterGetInfoUrl.replace(
+        "https://www.jjwxc.net/onebook.php?",
+        "https://app.jjwxc.net/androidapi/chapterContent?"
+      );
+      chapterGetInfoUrl = chapterGetInfoUrl.replace(
+        "http://my.jjwxc.net/onebook_vip.php?",
+        "https://app.jjwxc.net/androidapi/chapterContent?"
+      );
+      chapterGetInfoUrl = chapterGetInfoUrl.replace(
+        "https://my.jjwxc.net/onebook_vip.php?",
+        "https://app.jjwxc.net/androidapi/chapterContent?"
+      );
+      //let sid = getCookieObj("token");
+      chapterGetInfoUrl += "&versionCode=381";
+      // if (isVIP) {
+      let sid = getJjwxcTokenFromOptions();
+      if (sid) {
+        sid = normalizeJjwxcToken(sid);
+        chapterGetInfoUrl +=
+          "&token=" + sid;
+      } else {
+        throw new Error(
+          `当前需要手动捕获android版app token,详见github主页说明`
+        );
+      }
+      //}
+      // }
+
+      async function getChapterInfo(url: string): Promise<ChapterInfo> {
+        log.debug(
+          `请求地址: ${url}, Referrer: ${chapterUrl}, 重试次数: ${retryTime}`
+        );
+        const user_agent = "Mozilla/5.0 (Linux; Android 16; Pixel 9 Pro Build/TP1A.251005.002.B2; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/134.0.6998.109 Mobile Safari/537.36/JINJIANG-Android/381(Pixel9Pro;Scale/3.5;isHarmonyOS/false)" + Date.now();
+        return new Promise((resolve) => {
+          _GM_xmlhttpRequest({
+            url: url,
+            headers: {
+              //   accept: "application/json",
+              referer: "http://android.jjwxc.net?v=381",
+              //    not_tip: "updateTime",
+              "user-agent": user_agent,
+              //  "accept-encoding": "gzip",
+            },
+            method: "GET",
+            timeout: 60000,
+            onload: function (response) {
+              if (response.status === 200) {
+                // if (isVIP) {
+                let decodeResponseText = String(response.responseText);
+                let resultI;
+                try {
+                  resultI = JSON.parse(decodeResponseText);
+                } catch (e) {
+                  decodeResponseText = decodeVIPResopnce(response.responseHeaders, decodeResponseText);
+                }
+                try {
+                  resultI = JSON.parse(decodeResponseText);
+                } catch (e) {
+                  log.debug(`json：${decodeResponseText}`);
+                  resultI = JSON.parse('{"message":"try again!"}');
+                }
+                if (
+                  resultI &&
+                  resultI.code === undefined &&
+                  resultI.message === undefined &&
+                  !resultI.content
+                ) {
+                  log.debug(
+                    `[jjwxc] API 返回了无法识别的结构，原始报文（前500字符）：${decodeResponseText.slice(0, 500)}`
+                  );
+                }
+                resolve(resultI);
+                // } else {
+                //   const resultI: ChapterInfo = JSON.parse(
+                //     response.responseText
+                //   );
+                //   resolve(resultI);
+                // }
+              } else {
+                log.error(`response status = ${response.status}`);
+                const resultI: ChapterInfo = JSON.parse(
+                  '{"message":"try again!"}'
+                );
+                resolve(resultI);
+              }
+            },
+            onerror: function (response) {
+              const r = response as
+                | { status?: number; error?: string }
+                | undefined;
+              log.error(
+                `[jjwxc] API 请求网络错误：status=${r?.status ?? "unknown"}, error=${r?.error ?? "unknown"}`
+              );
+              resolve(JSON.parse('{"message":"try again!"}'));
+            },
+            ontimeout: function () {
+              log.error(`[jjwxc] API 请求超时：${url}`);
+              resolve(JSON.parse('{"message":"try again!"}'));
+            },
+          });
+        });
+      }
+      let result = await getChapterInfo(chapterGetInfoUrl.toString());
+      while ("message" in result && result.message == "try again!") {
+        retryTime++;
+        if (retryTime > retryLimit) {
+          retryTime = 0;
+          log.error(`请求${chapterGetInfoUrl.toString()}$失败`);
+          throw new Error(`请求${chapterGetInfoUrl.toString()}$失败`);
+        }
+        result = await getChapterInfo(chapterGetInfoUrl.toString());
+      }
+      log.debug(
+        `本章请求结果如下： code=${result?.code ?? "无"}, message=${result?.message ?? "无"}, content长度=${typeof result?.content === "string" ? result.content.length : 0}`
+      );
+      retryTime = 0;
+      if ("content" in result && result.content) {
+        const chapterinfo = "";//novelID + "-" + chapterID;
+        let content = result.content;
+        let postscript = result.sayBodyV2 ?? " ";
+        // if (isVIP) {
+        if (result.encryptField?.includes("content") && result.encryptType)
+          content = decodeVIPText(content, result.encryptType, chapterinfo);
+        if (result.encryptField?.includes("sayBodyV2") && result.encryptType)
+          postscript = decodeVIPText(postscript, result.encryptType, chapterinfo);
+        // }
+        const contentRaw = document.createElement("pre");
+        contentRaw.innerHTML = content;
+        // content can have HTML characters (such as &amp;).
+        contentRaw.innerHTML = contentRaw.textContent || "";
+        // these special characters are double-encoded. decode them twice.
+        const contentTextRaw = contentRaw.textContent || "";
+        let contentText = contentTextRaw.split("\n").map((p: string) => p.trim()).join("\n\n");
+        const _contentHTML = document.createElement("div");
+        _contentHTML.innerHTML = contentTextRaw
+          .split("\n")
+          .map((p: string) => p.trim())
+          .map((p: string) => {
+            if (p.length === 0) {
+              return "<p><br/></p>";
+            } else {
+              return `<p>${p}</p>`;
+            }
+          })
+          .join("\n");
+        const contentHTML = document.createElement("div");
+        contentHTML.className = "main";
+
+        contentHTML.appendChild(_contentHTML);
+
+        if (postscript.trim().length > 0) {
+          const hr = document.createElement("hr");
+          const authorSayDom = document.createElement("div");
+          authorSayDom.innerHTML =
+            postscript
+              ?.split("\n")
+              ?.map((p: string) => {
+                if (p.length === 0) {
+                  return "<p><br/></p>";
+                } else {
+                  return `<p>${p}</p>`;
+                }
+              })
+              ?.join("\n") ?? "";
+
+          contentHTML.appendChild(hr);
+          contentHTML.appendChild(authorSayDom);
+        }
+
+        contentRaw.innerHTML = postscript.trim().length === 0 ? contentRaw.innerHTML : 
+        [
+          contentRaw.innerHTML,
+          AUTHOR_SAY_PREFIX,
+          postscript,
+        ].join("\n\n");
+        contentText = postscript.trim().length === 0 ? contentText: [contentText, AUTHOR_SAY_PREFIX, postscript].join("\n\n");
+        contentText = contentText.replace(/\u200C/g, "");
+        await sleep(2000 + Math.round(Math.random() * 2000));
+        return {
+          chapterName,
+          contentRaw,
+          contentText,
+          contentHTML,
+          contentImages: null,
+          additionalMetadate: null,
+        };
+      } else {
+        await sleep(1000 + Math.round(Math.random() * 1000));
+        throw new Error(
+          result.message
+            ? `晋江 API 未返回正文：${result.message}`
+            : `晋江 API 未返回正文（返回内容无法识别：${JSON.stringify(result)?.slice(0, 200) ?? "空"}）。请确认已订阅该章并填写有效 Android token。`
+        );
+      }
+    }
+    const token = getJjwxcTokenFromOptions();
+    if (token != null) {
+      try {
+        return await getChapterByApi();
+      } catch (apiError) {
+        log.error(`[jjwxc] API下载失败，降级到页面解析: ${apiError instanceof Error ? apiError.message : String(apiError)}`);
+        if (isVIP) {
+          return vipChapter();
+        } else {
+          return publicChapter();
+        }
+      }
+    } else {
+      if (isVIP) {
+        return vipChapter();
+      } else {
+        return publicChapter();
+      }
+    }
+  }
+}

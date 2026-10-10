@@ -1,0 +1,26 @@
+.venv/
+.build/
+.local/
+exports/
+artifacts/
+__pycache__/
+*.pyc
+.DS_Store
+*.app/
+node_modules/
+
+# Generated browser bundles and local verification output
+engine/dist/
+engine/generated.ts
+engine/live-smoke.json
+
+# Local credentials and editor files
+.env
+.env.*
+!.env.example
+*.pem
+*.p12
+*.key
+.idea/
+.vscode/
+*.log
