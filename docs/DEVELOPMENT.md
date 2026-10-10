@@ -45,3 +45,16 @@ bash scripts/test_native_filter_performance.sh
 改动应附受影响行为的检查结果。UI 文案保持简洁，中英文资源同步更新。提交时不要加入 `.local/`、`exports/`、个人截图、账号信息、API Key 或浏览器会话；这些路径已在 `.gitignore` 排除。
 
 修改上游适配时保留源码版权声明，并同步 `engine/NOTICES.md` 中的修改记录。不要直接编辑生成的 JavaScript bundle。
+
+## 自包含安装包
+
+在目标架构的 Mac 上安装构建依赖并生成 DMG：
+
+```sh
+.venv/bin/python -m pip install -r requirements-build.txt
+bash scripts/build_release.sh 0.8.0
+```
+
+输出位于 `.build/releases/`，包含 DMG 和 SHA-256 文件。构建脚本只复制运行组件，不读取或打包 `.local`、`exports` 和钥匙串数据。使用 PyInstaller 打包 Python 服务与 Playwright 驱动，Chromium 使用已安装的匹配版本。安装版通过独立资源目录读取组件，通过 `~/Library/Application Support/Pagefall` 保存可写数据。
+
+当前脚本生成本机架构、临时签名的开发发行包；Developer ID 分发签名与公证尚未接入。用户安装说明见 [INSTALL.md](INSTALL.md)。

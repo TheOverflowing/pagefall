@@ -2,8 +2,8 @@
 set -euo pipefail
 
 novelist_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-novelist_build="$novelist_root/.build"
-novelist_app="$novelist_root/拾页.app"
+novelist_build="${NOVELIST_BUILD_PATH:-$novelist_root/.build}"
+novelist_app="${NOVELIST_APP_PATH:-$novelist_root/拾页.app}"
 novelist_arch="$(uname -m)"
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -43,9 +43,11 @@ echo "正在构建本地文字识别…"
   "$novelist_root/native/vision_ocr.swift" \
   -o "$novelist_build/vision-ocr"
 /usr/bin/xcrun swiftc -O -framework Security \
+  -target "$novelist_arch-apple-macosx14.0" \
   "$novelist_root/native/session_store.swift" -o "$novelist_build/session-store"
 /usr/bin/codesign --force --sign - --identifier local.novelist.session-store "$novelist_build/session-store"
 /usr/bin/xcrun swiftc -O -framework Security \
+  -target "$novelist_arch-apple-macosx14.0" \
   "$novelist_root/native/api_key_store.swift" -o "$novelist_build/api-key-store"
 /usr/bin/codesign --force --sign - --identifier local.novelist.api-key-store "$novelist_build/api-key-store"
 
@@ -73,6 +75,7 @@ done
 from pathlib import Path
 import plistlib
 import sys
+import os
 
 destination = Path(sys.argv[1])
 values = {
@@ -84,8 +87,8 @@ values = {
     "CFBundleInfoDictionaryVersion": "6.0",
     "CFBundleName": "拾页",
     "CFBundlePackageType": "APPL",
-    "CFBundleShortVersionString": "0.7.0",
-    "CFBundleVersion": "9",
+    "CFBundleShortVersionString": os.environ.get("NOVELIST_VERSION", "0.7.0"),
+    "CFBundleVersion": os.environ.get("NOVELIST_BUILD_NUMBER", "9"),
     "LSApplicationCategoryType": "public.app-category.books",
     "LSMinimumSystemVersion": "14.0",
     "NSHighResolutionCapable": True,

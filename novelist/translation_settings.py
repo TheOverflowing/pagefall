@@ -13,9 +13,9 @@ import threading
 import uuid
 
 
-ROOT = Path(__file__).resolve().parent.parent
+from .runtime import DATA_ROOT as ROOT, RESOURCE_ROOT
 SETTINGS_PATH = ROOT / ".local" / "translation-settings.json"
-KEY_HELPER = ROOT / ".build" / "api-key-store"
+KEY_HELPER = RESOURCE_ROOT / ".build" / "api-key-store"
 PROVIDERS = {
     "deepseek": {"name": "DeepSeek", "base_url": "https://api.deepseek.com", "default_model": "deepseek-flash"},
     "openrouter": {"name": "OpenRouter", "base_url": "https://openrouter.ai/api/v1", "default_model": "deepseek/deepseek-v4-flash"},

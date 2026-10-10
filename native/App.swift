@@ -200,6 +200,8 @@ final class Model: ObservableObject {
     private var libraryAccessURL: URL?
     private let endpoint = "http://127.0.0.1:8765"
     let root: URL
+    let resourceRoot: URL
+    let standalone: Bool
     var working: Bool { state.busy || sending }
     var downloading: Bool { state.busy && ["capturing", "scanning"].contains(state.phase) }
     func proofreading(_ bookID: String?) -> Bool { state.proofreading?.running == true && state.proofreading?.book_id == bookID }
@@ -210,7 +212,10 @@ final class Model: ObservableObject {
     }
 
     init() {
-        root = URL(fileURLWithPath: Bundle.main.object(forInfoDictionaryKey: "NovelistProjectRoot") as? String ?? Bundle.main.bundleURL.deletingLastPathComponent().path, isDirectory: true)
+        standalone = Bundle.main.object(forInfoDictionaryKey: "NovelistStandalone") as? Bool ?? false
+        resourceRoot = standalone ? Bundle.main.resourceURL! : URL(fileURLWithPath: Bundle.main.object(forInfoDictionaryKey: "NovelistProjectRoot") as? String ?? Bundle.main.bundleURL.deletingLastPathComponent().path, isDirectory: true)
+        root = standalone ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Pagefall", isDirectory: true) : resourceRoot
+        if standalone { try? FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700]) }
         if !UserDefaults.standard.bool(forKey: "jinjiangUpstreamEnabled") {
             mode = "auto"
             UserDefaults.standard.set(true, forKey: "jinjiangUpstreamEnabled")
@@ -316,8 +321,14 @@ final class Model: ObservableObject {
 
     private func launchBackend() {
         let process = Process()
-        process.executableURL = root.appendingPathComponent(".venv/bin/python")
-        process.arguments = ["-m", "uvicorn", "novelist.server:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log"]
+        process.executableURL = standalone ? resourceRoot.appendingPathComponent("backend/pagefall-backend") : root.appendingPathComponent(".venv/bin/python")
+        process.arguments = standalone ? ["serve"] : ["-m", "uvicorn", "novelist.server:app", "--host", "127.0.0.1", "--port", "8765", "--no-access-log"]
+        if standalone {
+            var environment = ProcessInfo.processInfo.environment
+            environment["NOVELIST_DATA_ROOT"] = root.path
+            environment["NOVELIST_RESOURCE_ROOT"] = resourceRoot.path
+            process.environment = environment
+        }
         process.currentDirectoryURL = root
         // Startup diagnostics must be writable before project-folder access is
         // restored. Opening protected project files here can block the UI.
@@ -338,6 +349,7 @@ final class Model: ObservableObject {
     }
 
     func authorizeLibraryFolder() {
+        if standalone { NSWorkspace.shared.open(root); return }
         guard !choosingLibraryFolder else { return }
         let panel = NSOpenPanel()
         panel.title = L("允许访问本机书库")
@@ -472,8 +484,8 @@ final class Model: ObservableObject {
         guard !sending else { return }
         sending = true
         let process = Process()
-        process.executableURL = root.appendingPathComponent(".venv/bin/python")
-        process.arguments = [root.appendingPathComponent("scripts/install_chrome_bridge.py").path]
+        process.executableURL = standalone ? resourceRoot.appendingPathComponent("backend/pagefall-backend") : root.appendingPathComponent(".venv/bin/python")
+        process.arguments = standalone ? ["install-chrome-bridge"] : [root.appendingPathComponent("scripts/install_chrome_bridge.py").path]
         process.currentDirectoryURL = root
         process.standardOutput = FileHandle.nullDevice
         process.standardError = FileHandle.nullDevice
@@ -481,7 +493,8 @@ final class Model: ObservableObject {
             Task { @MainActor in
                 self.sending = false
                 if task.terminationStatus == 0 {
-                    NSWorkspace.shared.open(self.root.appendingPathComponent("chrome-extension"))
+                    let folder = self.standalone ? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Novelist/ChromeBridge/extension") : self.root.appendingPathComponent("chrome-extension")
+                    NSWorkspace.shared.open(folder)
                     self.notice = L("本机连接已准备好。请在 Chrome 中加载扩展。")
                 } else { self.notice = L("本机连接安装未完成，请检查项目目录后重试。") }
             }

@@ -7,9 +7,9 @@ import re
 import subprocess
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
-ROOT = Path(__file__).resolve().parent.parent
-BUNDLE = ROOT / 'engine/dist/novelist-jinjiang.js'
-HELPER = ROOT / '.build/api-key-store'
+from .runtime import DATA_ROOT as ROOT, RESOURCE_ROOT
+BUNDLE = RESOURCE_ROOT / 'engine/dist/novelist-jinjiang.js'
+HELPER = RESOURCE_ROOT / '.build/api-key-store'
 token_expired = False
 
 MODEL_URL = 'https://github.com/xushengfeng/eSearch-OCR/releases/download/4.0.0/ppocr_v5_mobile.zip'

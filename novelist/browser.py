@@ -11,7 +11,7 @@ from .library import FAVORITES_URL, PROFILE_URL, PROFILE_NICKNAME_SCRIPT, BOOKSH
 from .session import load_cookies_sync, save_cookies_sync, normalize_cookies, connection_nonce
 from . import platforms
 
-ROOT = Path(__file__).resolve().parent.parent
+from .runtime import DATA_ROOT as ROOT, RESOURCE_ROOT
 ALLOWED_HOSTS = {"jjwxc.net", "www.jjwxc.net", "my.jjwxc.net", "m.jjwxc.net", "wap.jjwxc.net", "jjwxc.com", "www.jjwxc.com", "m.jjwxc.com", "wap.jjwxc.com"}
 
 
@@ -410,7 +410,7 @@ class Reader:
 
 
 async def recognize_image(path: Path, folder: Path):
-    binary = ROOT / ".build" / "vision-ocr"
+    binary = RESOURCE_ROOT / ".build" / "vision-ocr"
     if not binary.is_file():
         raise CaptureError("本地识别引擎尚未编译，请通过「启动拾页.command」启动。")
     # Tall chapter screenshots are tiled with overlap; keep observations only in

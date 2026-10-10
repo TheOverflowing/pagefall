@@ -214,7 +214,7 @@ class InstallerTests(unittest.TestCase):
             (temporary_root / ".venv/bin/python").touch()
             (temporary_root / ".build/session-store").touch()
             (temporary_root / "chrome-extension/manifest.json").write_text((root / "chrome-extension/manifest.json").read_text())
-            for filename in ("native_host.py", "session.py"):
+            for filename in ("native_host.py", "session.py", "runtime.py"):
                 (temporary_root / "novelist" / filename).write_bytes((root / "novelist" / filename).read_bytes())
             temporary_home = Path(folder) / "fixture-home"
             destination = temporary_home / "Library/Application Support/Google/Chrome/NativeMessagingHosts/local.novelist.connect.json"

@@ -6,8 +6,8 @@ import re
 import subprocess
 import time
 
-ROOT = Path(__file__).resolve().parent.parent
-HELPER = ROOT / ".build" / "session-store"
+from .runtime import DATA_ROOT as ROOT, RESOURCE_ROOT
+HELPER = RESOURCE_ROOT / ".build" / "session-store"
 MAX_COOKIES = 256
 MAX_BYTES = 1_048_576
 _DOMAIN = re.compile(r"(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*jjwxc\.(?:net|com)\Z")

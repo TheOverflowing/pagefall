@@ -18,7 +18,7 @@ import tempfile
 
 
 VERSION = "local-geometry-v1"
-ROOT = Path(__file__).resolve().parent.parent
+from .runtime import RESOURCE_ROOT as ROOT
 _CJK = r"\u3400-\u4dbf\u4e00-\u9fff"
 _WATERMARK = re.compile(r"(?:@\s*)?无限好文[，,、]?\s*尽在.{0,4}文学城|(?:www\.)?jjwxc\.(?:net|com)", re.I)
 _BROKEN_CHARACTERS = re.compile(r"[\uFFFD\uE000-\uF8FF\U000F0000-\U000FFFFD\U00100000-\U0010FFFD]+")

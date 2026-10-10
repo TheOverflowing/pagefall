@@ -18,6 +18,8 @@
 
 ## 安装与运行
 
+无需配置开发环境的安装包见 [GitHub Releases](https://github.com/TheOverflowing/pagefall/releases/latest)。下载 Apple Silicon DMG，将应用拖入“应用程序”；支持 macOS 14+。当前安装包尚未公证，详见[安装说明](docs/INSTALL.md)。
+
 当前提供源码开发版，需要 **macOS 14+、Python 3.10+、Node.js 18+、Xcode Command Line Tools**。首次准备需要联网。
 
 ```sh

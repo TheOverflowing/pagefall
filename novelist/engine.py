@@ -7,7 +7,9 @@ import re
 from .platforms import book_identity, normalize_book_url, normalize_chapter_url, platform_for
 
 
-BUNDLE = Path(__file__).resolve().parent.parent / "engine" / "dist" / "novelist-rules.js"
+from .runtime import RESOURCE_ROOT
+
+BUNDLE = RESOURCE_ROOT / "engine" / "dist" / "novelist-rules.js"
 
 
 def failure(message, pause=True):

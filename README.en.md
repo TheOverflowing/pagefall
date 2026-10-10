@@ -18,6 +18,8 @@ Jinjiang is the primary integration. Changpei and Fanqie have dedicated adapters
 
 ## Build and run
 
+For installation without developer tools, download the Apple Silicon DMG from [GitHub Releases](https://github.com/TheOverflowing/pagefall/releases/latest), then drag the app into Applications. Requires macOS 14+. The current package is locally signed and not notarized; see [installation notes](docs/INSTALL.md).
+
 Requires macOS 14+, Python 3.10+, Node.js 18+, and Xcode Command Line Tools.
 
 ```sh

@@ -13,7 +13,7 @@ import re
 from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 
-ROOT = Path(__file__).resolve().parent.parent
+from .runtime import RESOURCE_ROOT as ROOT
 UPSTREAM_MANIFEST = ROOT / "engine" / "rules-manifest.json"
 
 
