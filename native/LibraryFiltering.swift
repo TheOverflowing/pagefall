@@ -164,12 +164,19 @@ struct LibraryFilterSelection: Equatable {
     var count: Int { facets.values.reduce(0) { $0 + $1.count } + wordRanges.count + publicationPeriods.count + publicationYears.count + favoriteRanges.count + tags.count }
     var isEmpty: Bool { count == 0 }
     var identity: String {
-        LibraryFacet.allCases.map { $0.rawValue + ":" + (facets[$0] ?? []).sorted().joined(separator: ",") }.joined(separator: "|")
-            + "|" + wordRanges.map(\.rawValue).sorted().joined(separator: ",")
-            + "|" + publicationPeriods.map(\.rawValue).sorted().joined(separator: ",")
-            + "|" + publicationYears.sorted().map(String.init).joined(separator: ",")
-            + "|" + favoriteRanges.map(\.rawValue).sorted().joined(separator: ",")
-            + "|" + tags.sorted().joined(separator: ",") + "|" + String(matchAllTags)
+        let facetKeys: [String] = LibraryFacet.allCases.map { facet in
+            let values = (facets[facet] ?? []).sorted().joined(separator: ",")
+            return facet.rawValue + ":" + values
+        }
+        let parts: [String] = [
+            facetKeys.joined(separator: "|"),
+            wordRanges.map(\.rawValue).sorted().joined(separator: ","),
+            publicationPeriods.map(\.rawValue).sorted().joined(separator: ","),
+            publicationYears.sorted().map(String.init).joined(separator: ","),
+            favoriteRanges.map(\.rawValue).sorted().joined(separator: ","),
+            tags.sorted().joined(separator: ","), String(matchAllTags)
+        ]
+        return parts.joined(separator: "|")
     }
 
     mutating func toggle(_ value: String, in facet: LibraryFacet) {
