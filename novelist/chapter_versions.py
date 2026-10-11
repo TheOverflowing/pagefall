@@ -41,6 +41,21 @@ class ChapterVersions:
         except FileNotFoundError:
             return []
 
+    def _write(self, path, book_id, chapter_id, versions):
+        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, prefix=path.name + '.', suffix='.tmp', delete=False) as output:
+                temporary = Path(output.name)
+                json.dump({'book_id': book_id, 'chapter_id': chapter_id, 'versions': versions}, output, ensure_ascii=False)
+            temporary.replace(path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    def _trash_path(self, book_id, chapter_id):
+        return self.directory / '.trash' / _identifier(book_id) / (_identifier(chapter_id) + '.json')
+
     def record(self, book_id, chapter, kind='source'):
         if kind not in _KINDS:
             raise ValueError('Invalid chapter version kind')
@@ -53,8 +68,10 @@ class ChapterVersions:
             # Importing an old local copy must not make it a new revision again.
             candidates = reversed(versions) if kind == 'existing' else versions[-1:]
             for version in candidates:
-                if version['text'] == text:
+                if version['text'] == text and (kind == 'existing' or version.get('method') == chapter.get('method')):
                     return dict(version)
+            if kind == 'existing' and any(version['text'] == text for version in self._load(self._trash_path(book_id, chapter['id']))):
+                return None
             version = {
                 'id': uuid4().hex,
                 'title': chapter.get('title', ''),
@@ -63,19 +80,29 @@ class ChapterVersions:
                 'source_updated_at': chapter.get('source_updated_at') or None,
                 'kind': kind,
                 'characters': len(text.strip()),
+                'method': chapter.get('method'),
             }
             versions.append(version)
-            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            temporary = None
-            try:
-                with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, prefix=path.name + '.', suffix='.tmp', delete=False) as output:
-                    temporary = Path(output.name)
-                    json.dump({'book_id': book_id, 'chapter_id': chapter['id'], 'versions': versions}, output, ensure_ascii=False)
-                temporary.replace(path)
-            finally:
-                if temporary is not None:
-                    temporary.unlink(missing_ok=True)
+            self._write(path, book_id, chapter['id'], versions)
             return dict(version)
+
+    def delete(self, book_id, chapter_id, version_id):
+        path = self._path(book_id, chapter_id)
+        with self._lock(path):
+            versions = self._load(path)
+            selected = next((version for version in versions if version['id'] == version_id), None)
+            if selected is None:
+                raise ValueError('章节版本不存在。')
+            trash = self._trash_path(book_id, chapter_id)
+            deleted = [version for version in self._load(trash) if version['id'] != version_id]
+            deleted.append({**selected, 'deleted_at': datetime.now(timezone.utc).isoformat()})
+            self._write(trash, book_id, chapter_id, deleted)
+            remaining = [version for version in versions if version['id'] != version_id]
+            if remaining:
+                self._write(path, book_id, chapter_id, remaining)
+            else:
+                path.unlink()
+            return _summary(selected)
 
     def list(self, book_id, chapter_id):
         path = self._path(book_id, chapter_id)

@@ -12,4 +12,12 @@ const result=await build({entryPoints:['engine/jinjiang/bridge.ts'],bundle:true,
 const inputs=Object.keys(result.metafile.inputs);
 if(inputs.some(p=>/vendor.*\/(ui|save|router)\//.test(p)||/vendor.*\/(index|setting|stat|global)\.ts$/.test(p)))throw Error('Unexpected upstream side effects');
 fs.writeFileSync('engine/dist/jinjiang-build-report.json',JSON.stringify({upstream:JSON.parse(fs.readFileSync('vendor/novel-downloader/UPSTREAM.json','utf8')),inputs,bytes:fs.statSync('engine/dist/novelist-jinjiang.js').size},null,2));
+const source=fs.readFileSync(path.join(vendor,'rules/special/original/jjwxc.ts'),'utf8');
+const apiStart=source.indexOf('    function extractKeys('),apiEnd=source.indexOf('    async function getChapterByApi()',apiStart);
+if(apiStart<0||apiEnd<apiStart)throw Error('Upstream API decoder changed');
+const apiSource='import * as CryptoJS from "crypto-js"; const log={debug:()=>{},error:()=>{}};\n'+source.slice(apiStart,apiEnd).replace('log.error(`unknown encryptType ${encryptType}`);\n        return text;','throw Error("Unsupported API encryption");')+'\nexport {decodeVIPResopnce,decodeVIPText};';
+await build({entryPoints:['engine/jinjiang/api.ts'],bundle:true,format:'cjs',platform:'node',target:'node18',outfile:'engine/dist/novelist-jinjiang-api.cjs',plugins:[{name:'upstream-api-decoders',setup(b){
+ b.onResolve({filter:/^upstream-jinjiang-api$/},()=>({path:'upstream-api',namespace:'upstream-api'}));
+ b.onLoad({filter:/.*/,namespace:'upstream-api'},()=>({contents:apiSource,loader:'ts',resolveDir:root}));
+}}],banner:{js:'/*! Jinjiang API decoders from pinned novel-downloader, AGPL-3.0-or-later. See engine/NOTICES.md. */'}});
 console.log('Built dedicated upstream Jinjiang parser.');

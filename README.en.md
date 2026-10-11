@@ -7,10 +7,13 @@ A native macOS app for organizing and reading novels, downloading accessible cha
 ## Features
 
 - Jinjiang bookshelf sync, covers, account names, and combined filters for categories, perspective, tags, publication dates, and favorites.
+- List and cover views, local folders, bulk moves, and sorting by updates, recent reading, word count, or favorites.
 - Book details, character relationships, chapter summaries, and on-demand reading of free or purchased chapters.
 - Automatic update checks for locally saved books and existing Jinjiang automatic-renewal subscriptions, with saved revisions and unread markers.
 - Local chapter history, line-by-line comparisons, and explicit single-chapter refresh.
 - Jinjiang App API first, webpage parsing and font decoding next, Apple Vision OCR as fallback. Pause and resume downloads.
+- Whole-book download snapshots with reading, deletion, and original/translation export from a selected version. Failed refreshes preserve saved text.
+- Browser-free Jinjiang App API reads with a reusable connection; the browser starts only for webpage/OCR fallback.
 - Local OCR checks with preserved source text and screenshots.
 - DeepSeek and OpenRouter translation with configurable models and languages, character glossaries, context summaries, and resumable checkpoints.
 - Original or translated TXT, Markdown, and EPUB exports. Clean mode is enabled by default.

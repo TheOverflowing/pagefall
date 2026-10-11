@@ -19,7 +19,9 @@ struct NativeLibraryFilterPerformance {
                 published_at: "\(2020 + ordinal % 7)-\(String(format: "%02d", ordinal % 12 + 1))-\(String(format: "%02d", ordinal % 28 + 1))",
                 favorite_count: ordinal * 120)
             return LibraryBook(id: String(ordinal), title: "故事 \(ordinal)", author: "作者 \(ordinal % 80)", url: "",
-                tags: ["甜文", "标签 \(ordinal % 80)", "标签 \(ordinal % 25)"], classification: classification)
+                tags: ["甜文", "标签 \(ordinal % 80)", "标签 \(ordinal % 25)"], classification: classification,
+                folder_ids: ordinal % 7 == 0 ? [] : ["folder_\(ordinal % 12)"], last_read_at: ordinal % 5 == 0 ? nil : Double(ordinal * 60 + 1_700_000_000),
+                updated_at: ordinal % 9 == 0 ? nil : "2026-10-\(String(format: "%02d", ordinal % 28 + 1)) 08:00:00")
         }
     }
 
@@ -95,6 +97,19 @@ struct NativeLibraryFilterPerformance {
         print(String(format: "changing_selection_ms legacy=%.4f indexed=%.4f", legacyMatch.milliseconds, indexedMatch.milliseconds))
         print(String(format: "redraw_calculations_ms legacy=%.4f indexed=%.4f", legacyRedraw.milliseconds, indexedRedraw.milliseconds))
         print(String(format: "combined_selection_ms=%.4f verified_combinations=%d", combined.milliseconds, combinations.count))
+        let sortedBuild = measure(runs: 100) {
+            LibraryFilterIndex(books: books).matchingBooks(LibraryFilterSelection(), now: now, sort: .updated, ascending: false).count
+        }
+        let sortedRedraw = measure(runs: 1000) {
+            index.matchingBooks(selection, now: now, sort: .updated, ascending: false).count
+        }
+        combination = 0
+        let sortedCombined = measure(runs: 500) {
+            defer { combination += 1 }
+            return index.matchingBooks(combinations[combination % combinations.count], now: now, sort: .updated, ascending: false).count
+        }
+        guard sortedCombined.checksum == combined.checksum else { fatalError("Sorting changed filter membership") }
+        print(String(format: "sorted_index_ms=%.4f sorted_redraw_ms=%.4f sorted_combined_selection_ms=%.4f", sortedBuild.milliseconds, sortedRedraw.milliseconds, sortedCombined.milliseconds))
         if CommandLine.arguments.count > 2 {
             let directory = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
             let cached = try LibraryState.cached(in: directory)

@@ -37,3 +37,4 @@ jobs:
           .venv/bin/python -m unittest discover -s tests -v
           .venv/bin/python -m unittest discover -s engine/tests -v
           bash scripts/test_native_library_filters.sh
+          bash scripts/test_native_library_organization.sh

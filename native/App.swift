@@ -9,6 +9,9 @@ struct Chapter: Decodable, Equatable, Identifiable {
     var source_updated_at: String?
     var update_status: String?
     var update_detected_at: String?
+    var readable_locally: Bool?
+    var read_only: Bool?
+    var reading_source: String?
     var url: String?
     var state: String
     var text: String?
@@ -57,6 +60,13 @@ struct Book: Decodable, Equatable, Identifiable {
     var translation: BookTranslation?
     var metadata: BookMetadata?
     var details_stale: Bool?
+    var download_run: DownloadRun?
+}
+
+struct DownloadRun: Decodable, Equatable {
+    var refresh: Bool
+    var done: Int
+    var total: Int
 }
 
 struct ProgressInfo: Decodable, Equatable {
@@ -131,6 +141,7 @@ struct AppState: Decodable, Equatable {
     var background: Bool?
     var downloads: [Book]?
     var queue: [QueueItem]?
+    var queue_paused: Bool?
     var proofreading: ProofreadingProgress?
     var translation: TranslationProgress?
     var updates: UpdateMonitorState?
@@ -190,6 +201,8 @@ final class Model: ObservableObject {
     private var receivedLibrarySnapshot = false
     private var openRequestID = UUID()
     private var bookTask: Task<Void, Never>?
+    private var chapterReadTask: Task<Void, Never>?
+    private var chapterReadID = UUID()
     private var refreshingChapter = false
     private var updateActivity: NSObjectProtocol?
     private var libraryAccessURL: URL?
@@ -479,13 +492,52 @@ final class Model: ObservableObject {
     }
 
     func refreshLibrary() { action("library/refresh") }
+
+    func saveLibraryFolder(id: String?, name: String) async throws -> String? {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        var payload: [String: Any] = ["name": trimmed]
+        if let id { payload["id"] = id }
+        let fresh: LibraryState = try await request(id == nil ? "/api/library/folders" : "/api/library/folders/rename", data: payload)
+        updateLibrary(fresh)
+        return id ?? fresh.folder_id
+    }
+
+    func deleteLibraryFolder(_ id: String) async throws {
+        let fresh: LibraryState = try await request("/api/library/folders/delete", data: ["id": id])
+        updateLibrary(fresh)
+    }
+
+    func moveLibraryBooks(_ ids: [String], to folderID: String?) {
+        Task {
+            do { try await assignLibraryBooks(ids, to: folderID) }
+            catch { notice = localizedError(error) }
+        }
+    }
+
+    func assignLibraryBooks(_ ids: [String], to folderID: String?) async throws {
+        let fresh: LibraryState = try await request("/api/library/folders/assign", data: ["book_ids": ids, "folder_id": folderID as Any? ?? NSNull()])
+        updateLibrary(fresh)
+    }
+
+    func recordReading(bookID: String) {
+        struct ReadingStamp: Decodable { var last_read_at: Double }
+        Task {
+            guard let result: ReadingStamp = try? await request("/api/library/read", data: ["book_id": bookID]),
+                  let index = libraryState.books.firstIndex(where: { $0.id == bookID }) else { return }
+            var fresh = libraryState
+            fresh.books[index].last_read_at = result.last_read_at
+            updateLibrary(fresh)
+        }
+    }
     func connectAccount() { action("account/connect") }
     func finishConnection() { action("account/finish") }
     func cancelConnection() { action("account/cancel") }
     func showReader() { connectAccount() }
 
-    func requestDownload(url: String) {
-        action("download", payload: ["url": url, "mode": mode, "delay": 3])
+    func requestDownload(url: String, refresh: Bool? = nil) {
+        var payload: [String: Any] = ["url": url, "mode": mode]
+        if let refresh { payload["refresh"] = refresh }
+        action("download", payload: payload)
     }
 
     func proofread(_ bookID: String, undo: Bool = false) {
@@ -543,23 +595,29 @@ final class Model: ObservableObject {
         action("scan", payload: ["url": url])
     }
 
-    func openChapter(bookID: String, chapterID: String) {
-        chapterRefreshError = nil
-        Task {
-            do { editing = try await request("/api/chapter?id=" + chapterID + "&book_id=" + bookID) }
-            catch { notice = localizedError(error) }
-        }
+    func canReadChapter(_ chapter: Chapter?) -> Bool {
+        guard let chapter else { return false }
+        return !readingChapter || chapter.readable_locally == true || ["done", "review", "reviewed"].contains(chapter.state)
     }
 
     func readChapter(_ book: Book, _ chapter: Chapter) {
-        guard !readingChapter else { return }
+        guard canReadChapter(chapter) else { return }
+        chapterReadTask?.cancel()
+        let requestID = UUID()
+        chapterReadID = requestID
         chapterRefreshError = nil
-        if ["done", "review", "reviewed"].contains(chapter.state) { openChapter(bookID: book.id, chapterID: chapter.id); return }
         readingChapter = true
-        Task {
-            defer { readingChapter = false }
-            do { let chapter: OnlineChapter = try await request("/api/read-chapter", data: ["book_id": book.id, "chapter_id": chapter.id]); if detail?.id == book.id { reading = chapter } }
-            catch { notice = localizedError(error) }
+        chapterReadTask = Task {
+            defer { if chapterReadID == requestID { readingChapter = false } }
+            do {
+                let saved: Chapter = try await request("/api/read-chapter", data: ["book_id": book.id, "chapter_id": chapter.id])
+                guard chapterReadID == requestID, !Task.isCancelled, detail?.id == book.id else { return }
+                if saved.read_only == true && saved.reading_source != "download" {
+                    reading = OnlineChapter(id: saved.id, book_id: book.id, title: saved.title, text: saved.text ?? "")
+                } else { editing = saved }
+                recordReading(bookID: book.id)
+            }
+            catch { if chapterReadID == requestID && !Task.isCancelled { notice = localizedError(error) } }
         }
     }
 
@@ -633,7 +691,7 @@ final class Model: ObservableObject {
         } catch { notice = localizedError(error); return false }
     }
 
-    func export(_ format: String, bookID: String? = nil, variant: String = "source") {
+    func export(_ format: String, bookID: String? = nil, variant: String = "source", versionID: String? = nil, versionName: String? = nil) {
         guard !sending else { return }
         let clean = cleanExport
         sending = true
@@ -643,10 +701,11 @@ final class Model: ObservableObject {
             do {
                 var payload: [String: Any] = ["format": format, "variant": variant, "clean": clean]
                 if let bookID { payload["book_id"] = bookID }
-                let result: ExportResult = try await request("/api/export", data: payload)
+                if let versionID { payload["version_id"] = versionID }
+                let result: ExportResult = try await request(versionID == nil ? "/api/export" : "/api/book-version-export", data: payload)
                 let source = URL(fileURLWithPath: result.path)
                 let panel = NSSavePanel()
-                panel.nameFieldStringValue = source.lastPathComponent
+                panel.nameFieldStringValue = versionName.map { source.deletingPathExtension().lastPathComponent + " — " + $0 + "." + format } ?? source.lastPathComponent
                 panel.allowedContentTypes = [UTType(filenameExtension: format) ?? .data]
                 panel.canCreateDirectories = true
                 panel.title = L("导出小说")
@@ -726,7 +785,7 @@ struct ChapterView: View {
     @State private var showOriginal: Bool
     @State private var showingHistory = false
     @Environment(\.dismiss) private var dismiss
-    private var canEdit: Bool { chapter.state != "blocked" && (!model.downloading || model.state.book?.id != chapter.book_id) && !model.proofreading(chapter.book_id) && !model.translating(chapter.book_id) }
+    private var canEdit: Bool { chapter.read_only != true && chapter.state != "blocked" && (!model.downloading || model.state.book?.id != chapter.book_id) && !model.proofreading(chapter.book_id) && !model.translating(chapter.book_id) }
     private var hasTranslation: Bool { chapter.translation != nil || model.detail?.id == chapter.book_id && model.detail?.translation != nil || model.downloads.contains { $0.id == chapter.book_id && $0.translation != nil } }
     private var displayedTitle: String { !showOriginal ? chapter.translation?.translated_title ?? chapter.title : chapter.title }
     init(model: Model, chapter: Chapter) {
@@ -801,6 +860,12 @@ struct ChapterView: View {
             }
             if !showOriginal {
                 translationReader
+            } else if chapter.read_only == true, let savedText = chapter.text, !savedText.isEmpty {
+                ScrollView {
+                    Text(savedText).font(.system(size: 15)).lineSpacing(6).textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(16)
+                }.background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+                    .accessibilityLabel(L("章节正文"))
             } else if !(chapter.text ?? "").isEmpty {
                 TextEditor(text: $text).font(.system(size: 15)).lineSpacing(6).padding(8)
                     .background(Color(nsColor: .textBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 8))
@@ -812,10 +877,10 @@ struct ChapterView: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {
-                Text(!showOriginal ? "" : model.translating(chapter.book_id) ? L("这本书正在翻译，暂停后可校对原文。") : chapter.state == "blocked" ? L("尚未取得本章正文，不能标记为已校对。") : model.proofreading(chapter.book_id) ? L("这本书正在自动校对，完成或暂停后可编辑。") : canEdit ? "" : L("这本书正在下载，暂停后可保存校对。")) .font(.caption).foregroundStyle(.secondary)
+                Text(!showOriginal || chapter.read_only == true ? "" : model.translating(chapter.book_id) ? L("这本书正在翻译，暂停后可校对原文。") : chapter.state == "blocked" ? L("尚未取得本章正文，不能标记为已校对。") : model.proofreading(chapter.book_id) ? L("这本书正在自动校对，完成或暂停后可编辑。") : canEdit ? "" : L("这本书正在下载，暂停后可保存校对。")) .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button(L("关闭")) { if changed { confirmDiscard = true } else { dismiss() } }.keyboardShortcut(.cancelAction).disabled(saving)
-                if showOriginal {
+                if showOriginal && chapter.read_only != true {
                 Button(saving ? L("正在保存…") : L("保存并标记已校对")) {
                     saving = true
                     Task {

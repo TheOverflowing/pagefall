@@ -14,6 +14,7 @@ from novelist.library import (
     BOOKSHELF_STATUS_SCRIPT,
     BOOKSHELF_READY_SCRIPT,
     BOOKSHELF_NICKNAME_SCRIPT,
+    BOOKSHELF_FOLDERS_SCRIPT,
     PROFILE_NICKNAME_SCRIPT,
     FAVORITES_URL,
     normalize_favorites_url,
@@ -95,6 +96,64 @@ class BookshelfScriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([book["id"] for book in result], ["101", "202", "303"])
         self.assertEqual([book["author"] for book in result], ["测试作者甲", "测试作者乙", ""])
         self.assertTrue(all("chapterid" not in book["url"] and "jsid" not in book["url"] for book in result))
+
+    async def test_real_class_selectors_include_empty_folders_and_default_class(self):
+        await self.page.set_content('''
+          <form id="frmLogList">
+           <select id="classid1"><option value="">选择分类</option><option value="7">在追</option><option value="8">想看</option></select>
+           <select id="classid"><option value="7">在追</option><option value="8">想看</option></select>
+           <table><tr><td>尚未分类 <a id="open_0">该类别有6条收藏 [+点击展开]</a> [生成书单]</td></tr></table>
+           <table class="favoritelisttable"><tr><td><input class="class_0"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid=101">来信</a></td></tr></table>
+          </form>''')
+        before=await self.page.content()
+        folders=await self.page.evaluate(BOOKSHELF_FOLDERS_SCRIPT)
+        self.assertEqual(folders,[{'id':'7','name':'在追'},{'id':'8','name':'想看'},{'id':'0','name':'尚未分类'}])
+        self.assertEqual((await self.page.evaluate(BOOKSHELF_SCRIPT))[0]['source_folder_ids'],['0'])
+        self.assertEqual(await self.page.content(),before)
+
+    async def test_empty_default_class_without_expand_control_is_included(self):
+        await self.page.set_content('<form id="frmLogList"><table><tr><td>尚未分类 该类别有0条收藏</td></tr></table></form>')
+        self.assertEqual(await self.page.evaluate(BOOKSHELF_FOLDERS_SCRIPT),[{'id':'0','name':'尚未分类'}])
+
+    async def test_membership_and_update_time_survive_duplicate_shortcut_rows(self):
+        await self.page.set_content('''<table class="favoritelisttable">
+          <tr><td><input class="class_-1"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid=101">来信</a></td><td class="chapterupdatetime"><font>2026-10-11 12:03:04</font></td><td>2026-10-10 09:00:00</td></tr>
+          <tr><td><input class="class_7"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid=101">来信</a></td><td class="chapterupdatetime">2026-10-11 12:01:02</td></tr>
+          <tr><td><input class="class_8"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid=101">来信</a></td><td class="chapterupdatetime">2026-10-11 12:02</td></tr>
+        </table>''')
+        result=await self.page.evaluate(BOOKSHELF_SCRIPT)
+        self.assertEqual(len(result),1)
+        self.assertEqual(result[0]['source_folder_ids'],['7','8'])
+        self.assertEqual(result[0]['updated_at'],'2026-10-11 12:03:04')
+        self.assertNotIn('last_read_at',result[0])
+
+    async def test_collection_dates_and_invalid_update_dates_are_not_updates(self):
+        await self.page.set_content('''<table class="favoritelisttable">
+          <tr><td><input class="class_-1"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid=101">来信</a></td><td>2026-10-11 12:03:04</td></tr>
+          <tr><td><a href="https://www.jjwxc.net/onebook.php?novelid=202">长街</a></td><td class="chapterupdatetime">2026-02-30 12:03:04</td></tr>
+          <tr><td><a href="https://www.jjwxc.net/onebook.php?novelid=303">书店</a></td><td class="chapterupdatetime">2026-10-11 12:03</td></tr>
+        </table>''')
+        result=await self.page.evaluate(BOOKSHELF_SCRIPT)
+        self.assertNotIn('source_folder_ids',result[0]);self.assertNotIn('updated_at',result[0]);self.assertNotIn('updated_at',result[1])
+        self.assertEqual(result[2]['updated_at'],'2026-10-11 12:03:00')
+
+    async def test_reader_preserves_folders_and_memberships_across_group_pagination(self):
+        def row(identifier,group,updated):
+            return f'<tr><td><input class="class_{group}"></td><td><a href="https://www.jjwxc.net/onebook.php?novelid={identifier}">样本 {identifier}</a></td><td class="chapterupdatetime">{updated}</td></tr>'
+        first='<select id="classid"><option value="7">在追</option><option value="9">空组</option></select><table class="favoritelisttable">'+row(1,7,'2026-10-11 10:00:00')+row(2,7,'2026-10-11 12:00:00')+'</table><a href="favorite.php?type=8&page=2">下一页</a>'
+        second='<select id="classid"><option value="8">已读</option></select><table class="favoritelisttable">'+row(2,8,'2026-10-11 11:00:00')+row(3,8,'2026-10-10 10:00:00')+'</table>'
+        async def local_favorites(route):
+            body=second if 'page=2' in route.request.url else first
+            await route.fulfill(status=200,content_type='text/html; charset=utf-8',body='<h1>文章收藏[3/5000]</h1><div id="t_user_info"><span class="nickname">读者</span></div>'+body)
+        context=await self.browser.new_context();await context.route('**/*',local_favorites)
+        reader=Reader(Path('unused-folder-fixture-profile'));reader.context=context;reader.ensure=AsyncMock();reader._remember_session=AsyncMock()
+        try:result=await reader.library()
+        finally:await context.close()
+        self.assertTrue(result['complete'],{'count':len(result['books']),'expected':result['expected_count'],'message':result['message']})
+        self.assertEqual(result['folders'],[{'id':'7','name':'在追'},{'id':'9','name':'空组'},{'id':'8','name':'已读'}])
+        books={b['id']:b for b in result['books']}
+        self.assertEqual(books['2']['source_folder_ids'],['7','8'])
+        self.assertEqual(books['2']['updated_at'],'2026-10-11 12:00:00')
 
     async def test_rejects_invalid_links_navigation_and_reading_controls(self):
         await self.page.set_content("""

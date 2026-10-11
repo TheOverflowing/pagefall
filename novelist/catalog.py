@@ -75,12 +75,70 @@ DETAILS_SCRIPT = r'''() => {
 }'''
 
 
+def parse_web_metadata(raw):
+    """The same public synopsis and labels as DETAILS_SCRIPT, without a WebView."""
+    import re
+    if isinstance(raw,bytes):
+        charset=re.search(br'charset\s*=\s*["\x27]?([\w-]+)',raw[:4096],re.I)
+        encoding=charset.group(1).decode('ascii').lower() if charset else 'utf-8'
+        raw=raw.decode('gb18030' if encoding in {'gb2312','gbk','gb18030'} else 'utf-8',errors='replace')
+    class Metadata(HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=True)
+            self.stack=[];self.text=[];self.fields={};self.tags=[];self.ignored=0
+        def handle_starttag(self,tag,attributes):
+            attrs=dict(attributes)
+            if tag in {'script','style'}:self.ignored+=1
+            if self.ignored:return
+            if tag in {'br','p','div','li','tr'}:self.add('\n')
+            props=attrs.get('itemprop','').split()
+            if 'dateModified' in props and attrs.get('content'):self.fields['updated_at']=attrs['content']
+            field=next((target for source,target in [('genre','genre'),('updataStatus','status'),('wordCount','word_count'),('author','author'),('articleSection','title')] if source in props),'')
+            if tag=='h1' or 'bigtext' in attrs.get('class','').split():field='title'
+            if tag=='title':field='document_title'
+            if attrs.get('id')=='novelintro' or 'description' in props:field='description'
+            if tag=='a' and re.search(r'search|tag',attrs.get('href','')):field='tag'
+            if tag not in {'br','meta','input','img','hr','link','wbr','source'}:self.stack.append([tag,field,[]])
+        def add(self,text):
+            self.text.append(text)
+            for item in self.stack:
+                if item[1]:item[2].append(text)
+        def handle_data(self,text):
+            if not self.ignored:self.add(text)
+        def handle_endtag(self,tag):
+            if tag in {'script','style'}:self.ignored=max(0,self.ignored-1);return
+            if self.ignored:return
+            index=next((i for i in range(len(self.stack)-1,-1,-1) if self.stack[i][0]==tag),None)
+            if index is not None:
+                for _,field,parts in self.stack[index:]:
+                    text=''.join(parts).strip()
+                    if field=='tag' and text:self.tags.append(text)
+                    elif field and text and field not in self.fields:self.fields[field]=text
+                del self.stack[index:]
+            if tag in {'p','div','li','tr'}:self.add('\n')
+    parser=Metadata();parser.feed(raw);parser.close()
+    fields=parser.fields
+    fields['title']=re.sub(r'_晋江文学城.*$','',fields.get('title') or fields.pop('document_title','')).strip()
+    fields.pop('document_title',None)
+    full=''.join(parser.text)
+    for target,labels in [('protagonists','主角'),('supporting','配角'),('perspective','作品视角|文章视角|视角'),('tagline','一句话简介'),('theme','立意')]:
+        match=re.search(r'(?:'+labels+r')[：:]\s*([^\n]+)',full)
+        fields[target]=match[1].strip()[:1000] if match else ''
+    fields['description']=fields.get('description','')[:50000]
+    fields['word_count']=re.sub(r'字.*$','',fields.get('word_count',''))
+    fields['tags']=list(dict.fromkeys(parser.tags))[:30]
+    fields['source']='jjwxc'
+    return fields
+
+
 class Catalog:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.lock = asyncio.Lock()
         self.details_locks = {}
         self.versions = ChapterVersions(self.directory.parent/'chapter-versions')
+        self._reading_reader = None
+        self._reading_temporary = None
 
     def cached(self, identifier):
         try:
@@ -121,13 +179,15 @@ class Catalog:
                     result=await reader.scan(url)
                     if result.get('id')!=identifier:raise CaptureError('作品页面跳转到了其他书籍，请重新打开。','blocked',False)
                     if result.get('platform')=='jjwxc':
-                        result['metadata']=await reader.page.evaluate(DETAILS_SCRIPT)
+                        if 'metadata' not in result:
+                            result['metadata']=await reader.page.evaluate(DETAILS_SCRIPT)
                         extra=await metadata_task
                         result['metadata'].update({k:v for k,v in extra.items()if v})
                     if result.get('platform')=='jjwxc':
-                        summaries=await reader.page.evaluate(TOC_SUMMARIES_SCRIPT)
-                        for chapter in result['chapters']:
-                            chapter['summary']=summaries.get(chapter['id'],'')
+                        if reader.page is not None:
+                            summaries=await reader.page.evaluate(TOC_SUMMARIES_SCRIPT)
+                            for chapter in result['chapters']:
+                                chapter['summary']=summaries.get(chapter['id'],chapter.get('summary',''))
                         result['chapter_metadata_version']=CHAPTER_METADATA_VERSION
                     result['schema']=2
                     result['cached_at']=time.time()
@@ -144,24 +204,38 @@ class Catalog:
         if not chapter:raise ValueError('章节不存在。')
         chapter={**chapter,'book_url':book['url']}
         path=self.directory.parent/'reading'/book['id']/(chapter_id+'.json')
+        if not refresh:
+            cached=self.cached_read(book['id'],chapter_id)
+            if cached:
+                self.versions.record(book['id'],cached,kind='existing')
+                return cached
         async with self.lock:
             cached=self.cached_read(book['id'],chapter_id)
             if cached:
                 self.versions.record(book['id'],cached,kind='existing')
                 if not refresh:return cached
             if chapter.get('locked'):raise CaptureError('本章已锁定，暂时无法更新。' if refresh else '目录标注本章已锁定，当前无法阅读。','blocked',False)
-            with tempfile.TemporaryDirectory(prefix='shiye-reading-') as temporary:
-                reader=Reader(Path(temporary)/'browser')
-                try:
-                    result=await reader.capture(chapter,Path(temporary)/'source',mode='auto')
-                    if result.get('incomplete'):raise CaptureError('本章正文可能不完整，请稍后重试。','failed',False)
-                    value={'id':chapter_id,'book_id':book['id'],'title':chapter['title'],'url':chapter['url'],'text':result['text'],'method':result['method'],'source_updated_at':chapter.get('source_updated_at')}
-                    import hashlib
-                    if previous_source_hash is None or hashlib.sha256(value['text'].encode()).hexdigest()!=previous_source_hash:
-                        self.versions.record(book['id'],value,kind='source')
-                    self.write(path,value)
-                    return value
-                finally:await reader.close(remember=False)
+            if self._reading_reader is None:
+                self._reading_temporary=tempfile.TemporaryDirectory(prefix='shiye-reading-')
+                self._reading_reader=Reader(Path(self._reading_temporary.name)/'browser')
+            with tempfile.TemporaryDirectory(prefix='capture-',dir=self._reading_temporary.name) as temporary:
+                result=await self._reading_reader.capture(chapter,Path(temporary)/'source',mode='auto')
+                if result.get('incomplete'):raise CaptureError('本章正文可能不完整，请稍后重试。','failed',False)
+                value={'id':chapter_id,'book_id':book['id'],'title':chapter['title'],'url':chapter['url'],'text':result['text'],'method':result['method'],'source_updated_at':chapter.get('source_updated_at')}
+                import hashlib
+                if previous_source_hash is None or hashlib.sha256(value['text'].encode()).hexdigest()!=previous_source_hash:
+                    self.versions.record(book['id'],value,kind='source')
+                self.write(path,value)
+                return value
+
+    async def close(self):
+        async with self.lock:
+            reader,self._reading_reader=self._reading_reader,None
+            temporary,self._reading_temporary=self._reading_temporary,None
+            try:
+                if reader is not None:await reader.close(remember=False)
+            finally:
+                if temporary is not None:temporary.cleanup()
 
     async def watch_fetch(self, book):
         from .platforms import platform_for

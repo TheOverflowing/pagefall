@@ -5,12 +5,21 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import threading
+import time
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .runtime import DATA_ROOT as ROOT, RESOURCE_ROOT
+from .jinjiang_transport import ChapterTransport
 BUNDLE = RESOURCE_ROOT / 'engine/dist/novelist-jinjiang.js'
+API_BUNDLE = RESOURCE_ROOT / 'engine/dist/novelist-jinjiang-api.cjs'
 HELPER = RESOURCE_ROOT / '.build/api-key-store'
 token_expired = False
+API_REQUEST_LOCK = threading.Lock()
+API_LAST_REQUEST = 0.0
+API_REQUEST_INTERVAL = 0.5
+API_LAST_METRICS = {}
+_API_TRANSPORT = ChapterTransport()
 
 MODEL_URL = 'https://github.com/xushengfeng/eSearch-OCR/releases/download/4.0.0/ppocr_v5_mobile.zip'
 
@@ -144,11 +153,11 @@ def download_model():
     return content
 
 
-async def invoke(reader, method, chapter=None):
+async def invoke(reader, method, chapter=None, allow_token=True):
     token = ''
     try:
         try:
-            if method == 'read' and not token_expired and await asyncio.to_thread(has_token):
+            if allow_token and method == 'read' and not token_expired and await asyncio.to_thread(has_token):
                 token = await asyncio.to_thread(token_helper,'get')
         except ValueError:
             # Optional app credentials must not disable webpage parsing.
@@ -171,8 +180,12 @@ async def invoke(reader, method, chapter=None):
         reader._jinjiang_scope = None
 
 
-async def read(reader, chapter):
-    result = await invoke(reader,'read',chapter)
+async def read(reader, chapter, allow_token=True):
+    result = await invoke(reader,'read',chapter,allow_token=allow_token)
+    return capture_result(result,chapter)
+
+
+def capture_result(result, chapter):
     if not result:
         return None
     text=result.get('text')
@@ -184,6 +197,76 @@ async def read(reader, chapter):
     if expected and len(re.sub(r'\s','',text)) < expected*0.8:
         return None
     return {'text':text.strip(),'raw_text':text.strip(),'method':result['method'],'review':True,'incomplete':False,'screenshots':[],'error':'晋江原文已读取，请确认内容与完整性。','capture_strategy':'upstream-first','capture_details':{'requests':result.get('requests',0),'font_mapped':result.get('font_mapped',0)}}
+
+
+def api_response(chapter, token):
+    """Read the exact chapter over HTTPS without launching a browser or buying it."""
+    global API_LAST_REQUEST, API_LAST_METRICS
+    query=parse_qs(urlsplit(chapter['url']).query)
+    novel_id=query.get('novelid',[''])[0]
+    chapter_id=query.get('chapterid',[''])[0]
+    if not re.fullmatch(r'\d{1,12}',novel_id) or not re.fullmatch(r'\d{1,12}',chapter_id) or chapter_id!=str(chapter['id']):
+        raise ValueError('Invalid chapter')
+    path='/androidapi/chapterContent?'+urlencode({'novelId':novel_id,'chapterId':chapter_id,'versionCode':'381','token':token})
+    headers={'Referer':'http://android.jjwxc.net?v=381','User-Agent':'Mozilla/5.0 (Linux; Android 16) JINJIANG-Android/381'}
+    try:
+        with API_REQUEST_LOCK:
+            delay=API_LAST_REQUEST+API_REQUEST_INTERVAL-time.monotonic()
+            if delay>0:time.sleep(delay)
+            API_LAST_REQUEST=time.monotonic()
+            try:
+                return _API_TRANSPORT.read(path,headers)
+            finally:
+                API_LAST_METRICS={**_API_TRANSPORT.last_metrics,'throttle_s':max(0,delay)}
+    except Exception:
+        # Transport exceptions include the credential-bearing URL.
+        raise ValueError('晋江正文接口暂时不可用。') from None
+
+
+def close_api_transport():
+    with API_REQUEST_LOCK:
+        _API_TRANSPORT.close()
+
+
+def decode_api_response(content, headers, chapter):
+    from playwright._impl._driver import compute_driver_executable
+    node,_=compute_driver_executable()
+    query=parse_qs(urlsplit(chapter['url']).query)
+    payload={'body':content.decode('utf-8'),'headers':headers,'chapter_id':chapter['id'],'book_id':query['novelid'][0]}
+    result=subprocess.run([str(node),str(API_BUNDLE)],input=json.dumps(payload).encode(),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=15)
+    if result.returncode:raise ValueError('正文解析失败。')
+    decoded=json.loads(result.stdout)
+    if not isinstance(decoded,dict) or decoded.get('ok') is not True:
+        mark_expired(json.dumps(decoded).encode())
+        return None
+    from html.parser import HTMLParser
+    class Text(HTMLParser):
+        def __init__(self):super().__init__(convert_charrefs=True);self.parts=[]
+        def handle_data(self,data):self.parts.append(data)
+    text=decoded['content']
+    # Match upstream's two successive pre.innerHTML/textContent passes for
+    # double-encoded entities, using a detached text parser instead of a DOM.
+    for _ in range(2):
+        parser=Text();parser.feed(text);parser.close();text=''.join(parser.parts)
+    text='\n\n'.join(line.strip() for line in text.split('\n'))
+    postscript=decoded.get('postscript','')
+    if postscript.strip():text+='\n\n作者有话说：\n\n'+postscript
+    return {'ok':True,'text':text.replace('\u200c',''),'method':'jjwxc_api','requests':1}
+
+
+async def read_api(chapter):
+    if token_expired or not API_BUNDLE.is_file():return None
+    try:
+        if not await asyncio.to_thread(has_token):return None
+        token=await asyncio.to_thread(token_helper,'get')
+        content,headers=await asyncio.to_thread(api_response,chapter,token)
+        mark_expired(content)
+        result=await asyncio.to_thread(decode_api_response,content,headers,chapter)
+        return capture_result(result,chapter)
+    except asyncio.CancelledError:
+        raise
+    except Exception:
+        return None
 
 
 def mark_expired(content):

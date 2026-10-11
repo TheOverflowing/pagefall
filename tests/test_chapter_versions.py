@@ -104,3 +104,33 @@ class ChapterVersionsTests(unittest.TestCase):
         self.assertEqual({row['id'] for row in self.store.list('42', '1')}, {row['id'] for row in versions})
         saved = json.loads((self.directory / '42/1.json').read_text())
         self.assertEqual(len(saved['versions']), 12)
+
+    def test_delete_keeps_other_versions_and_does_not_reimport_existing_copy(self):
+        first = self.record('OCR 旧文', method='ocr')
+        second = self.record('接口新文', method='jjwxc_api')
+        self.store.delete('42', '1', first['id'])
+        self.assertEqual([row['id'] for row in self.store.list('42', '1')], [second['id']])
+        self.assertIsNone(self.record('OCR 旧文', 'existing', method='ocr'))
+        with self.assertRaises(ValueError):
+            self.store.get('42', '1', first['id'])
+        self.assertEqual(self.store.get('42', '1', second['id'])['text'], '接口新文')
+        self.assertTrue((self.directory / '.trash/42/1.json').exists())
+
+    def test_delete_last_version_survives_restart_and_later_acquisition_is_allowed(self):
+        first = self.record('正文', method='ocr')
+        self.store.delete('42', '1', first['id'])
+        self.store = ChapterVersions(self.directory)
+        self.assertEqual(self.store.list('42', '1'), [])
+        self.assertFalse((self.directory / '42/1.json').exists())
+        self.assertIsNone(self.record('正文', 'existing', method='ocr'))
+        latest = self.record('正文', method='jjwxc_api')
+        self.assertNotEqual(latest['id'], first['id'])
+        self.assertEqual(self.store.list('42', '1')[0]['method'], 'jjwxc_api')
+        with self.assertRaises(ValueError):
+            self.store.delete('42', '1', first['id'])
+
+    def test_same_text_from_different_acquisition_methods_is_preserved(self):
+        first = self.record('正文', method='ocr')
+        second = self.record('正文', method='jjwxc_api')
+        self.assertNotEqual(first['id'], second['id'])
+        self.assertEqual(len(self.store.list('42', '1')), 2)

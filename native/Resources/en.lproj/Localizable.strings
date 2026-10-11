@@ -844,3 +844,107 @@
 "自动续订列表尚未全部同步，请稍后重试。" = "The automatic-renewal list is incomplete. Please try again.";
 "部分章节暂时无法更新，将继续重试。" = "Some chapters could not be updated. They will be checked again.";
 "目录暂时无法读取，将稍后重试。" = "The chapter list is unavailable. It will be checked again later.";
+"全部" = "All";
+"进行中" = "In progress";
+"下载状态" = "Download status";
+"搜索下载" = "Search downloads";
+"没有匹配的下载" = "No matching downloads";
+"试试其他状态或书名。" = "Try another status or book title.";
+"%@ 本作品" = "%@ books";
+"继续队列" = "Resume queue";
+"%@ 本等待下载" = "%@ books queued";
+"%@，查看章节" = "%@, view chapters";
+"等待目录" = "Waiting for chapters";
+"下载中" = "Downloading";
+"已完成" = "Complete";
+"%@，更多操作" = "%@, more actions";
+"本机副本" = "Local copy";
+"已暂停" = "Paused";
+
+"下载版本" = "Download versions";
+
+"下载版本…" = "Download versions…";
+
+"重新下载" = "Download again";
+
+"删除所选版本？" = "Delete the selected version?";
+
+"删除版本" = "Delete version";
+
+"仅删除这份存档，当前正文和其他版本会保留。" = "Only this archive will be deleted. The current text and other versions will remain.";
+
+"OCR 识别" = "OCR";
+
+"App 接口" = "App API";
+
+"网页正文" = "Web text";
+
+"混合来源" = "Mixed sources";
+
+"暂无下载版本" = "No download versions";
+
+"来源" = "Source";
+
+"显示译文" = "Show translation";
+
+"%@ 章更新失败，保留原文" = "%@ chapters could not be updated; previous text kept";
+
+"版本" = "Version";
+
+"导出版本" = "Export version";
+
+"当前版本" = "Current version";
+
+"内容" = "Content";
+
+"导出内容" = "Export content";
+
+"格式" = "Format";
+
+"导出格式" = "Export format";
+
+"暂停当前处理后可导出当前版本，也可选择已保存的下载版本。" = "Pause the current operation to export the current version, or choose a saved download version.";
+
+"未分类" = "Unfiled";
+"重命名…" = "Rename…";
+"删除文件夹…" = "Delete folder…";
+"新建文件夹…" = "New folder…";
+"文件夹" = "Folders";
+"删除文件夹？" = "Delete folder?";
+"删除“%@”" = "Delete “%@”";
+"文件夹中的书籍会保留，并移到未分类。" = "Books will remain in your library and move to Unfiled.";
+"排序方式" = "Sort by";
+"排序方向" = "Sort direction";
+"从新到旧" = "Newest first";
+"从旧到新" = "Oldest first";
+"降序" = "Descending";
+"升序" = "Ascending";
+"书架排序" = "Library sort order";
+"书架显示方式" = "Library view";
+"列表模式" = "List view";
+"封面模式" = "Cover view";
+"移到文件夹" = "Move to folder";
+"更新于 %@" = "Updated %@";
+"读于 %@" = "Read %@";
+"%@ 收藏" = "%@ favorites";
+"默认排序" = "Default order";
+"最近阅读" = "Recently read";
+"书名" = "Title";
+"新建文件夹" = "New folder";
+"重命名文件夹" = "Rename folder";
+"文件夹名称" = "Folder name";
+"创建" = "Create";
+"文件夹里还没有小说" = "No books in this folder";
+"将书籍拖到左侧文件夹，或右键选择“移到文件夹”。" = "Drag books to a folder in the sidebar, or right-click and choose “Move to folder”.";
+"%@，%@，查看小说详情" = "%@, %@, view book details";
+"文件夹名称须为 1 至 80 个字。" = "Use a folder name with 1–80 characters.";
+"文件夹不存在。" = "This folder no longer exists.";
+"请选择要移动的书籍。" = "Choose the books to move.";
+
+"取消全选" = "Deselect all";
+"全选当前结果" = "Select all results";
+"已选 %@ 本" = "%@ selected";
+"正在移动书籍…" = "Moving books…";
+"批量管理" = "Manage books";
+"已移动 %@ 本小说" = "Moved %@ books";
+"选择%@" = "Select %@";

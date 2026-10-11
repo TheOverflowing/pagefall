@@ -10,6 +10,7 @@ mkdir -p "$novelist_build/swift-module-cache"
   -target "$novelist_arch-apple-macosx14.0" \
   -module-cache-path "$novelist_build/swift-module-cache" \
   "$novelist_root/native/LibraryFiltering.swift" \
+  "$novelist_root/native/LibraryOrganization.swift" \
   "$novelist_root/tests/native_library_filter_tests.swift" \
   -o "$novelist_build/native-library-filter-tests"
 "$novelist_build/native-library-filter-tests"

@@ -118,7 +118,42 @@ _DOM_HELPERS = r"""
      return !row||!visible(row);
    }).map(a=>({id:a.id,selector:'#'+CSS.escape(a.id)}));
  }
+ function shelfRow(a){return a.closest('tr,li,article,.book-item,.bookitem,.book-card,.bookcard,[data-novelid]')||a.parentElement;}
+ function rowFolders(row){
+   return [...new Set([...row?.querySelectorAll('input[class]')||[]].flatMap(input=>[...input.classList].flatMap(value=>{const m=value.match(/^class_(\d+)$/);return m?[String(Number(m[1]))]:[]})))];
+ }
+ function rowUpdatedAt(row){
+   const text=row?.querySelector('.chapterupdatetime')?.textContent||'';
+   const match=text.match(/\b(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?(?=\s|$)/);
+   if(!match)return '';
+   const [year,month,day,hour,minute,second]=match.slice(1).map(value=>Number(value||0));
+   const value=new Date(Date.UTC(year,month-1,day,hour,minute,second));
+   if(value.getUTCFullYear()!==year||value.getUTCMonth()!==month-1||value.getUTCDate()!==day||value.getUTCHours()!==hour||value.getUTCMinutes()!==minute||value.getUTCSeconds()!==second)return '';
+   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]||'00'}`;
+ }
 """
+
+
+BOOKSHELF_FOLDERS_SCRIPT = "() => {" + _DOM_HELPERS + r"""
+ const folders=new Map();
+ function add(id,name){
+   name=clean(name);if(/^\d+$/.test(id)&&name&&!folders.has(String(Number(id))))folders.set(String(Number(id)),{id:String(Number(id)),name});
+ }
+ // These are the existing collection-class selectors, including empty classes.
+ for(const option of document.querySelectorAll('select#classid option,select#classid1 option'))add(option.value,option.textContent);
+ for(const control of document.querySelectorAll('a[id^="open_"]')){
+   const match=control.id.match(/^open_(\d+)$/);if(!match)continue;
+   const header=control.closest('table');
+   const title=clean(header?.innerText).split(/该类别有\s*\d+\s*条收藏/)[0];
+   if(title)add(match[1],title);
+ }
+ // The default class has no option in the move-to-class selector.
+ if(!folders.has('0')){
+   const header=[...document.querySelectorAll('#frmLogList > table')].find(table=>/^尚未分类\s+该类别有\s*\d+\s*条收藏/.test(clean(table.innerText)));
+   if(header)add('0','尚未分类');
+ }
+ return [...folders.values()];
+}"""
 
 
 BOOKSHELF_SCRIPT = "() => {" + _DOM_HELPERS + r"""
@@ -127,7 +162,7 @@ BOOKSHELF_SCRIPT = "() => {" + _DOM_HELPERS + r"""
  const items=new Map();
  const controls=/^(?:阅读|开始阅读|继续阅读|全文阅读|阅读全文|查看全文|最新章节|上一章|下一章|第一章|最后一章|目录|书评|评论|购买|订阅|收藏|删除|移除|详情|查看详情)(?:[>›»→…]+)?$/;
  function authorFor(a){
-   const row=a.closest('tr,li,article,.book-item,.bookitem,.book-card,.bookcard,[data-novelid]')||a.parentElement;
+   const row=shelfRow(a);
    if(!row)return '';
    for(const author of row.querySelectorAll('a[href]')){
      if(!visible(author))continue;
@@ -144,9 +179,19 @@ BOOKSHELF_SCRIPT = "() => {" + _DOM_HELPERS + r"""
    if(!title||controls.test(title)||(link.chapter&&/^第[\d零一二三四五六七八九十百千两〇]+[章节回]/.test(title)))continue;
    const score=(link.chapter?0:10)+(a.matches('[itemprop~="name"],.novelname,.bookname')?2:0);
    const item={id:link.id,title,author:authorFor(a),url:`https://www.jjwxc.net/onebook.php?novelid=${link.id}`};
+   const row=shelfRow(a),folders=rowFolders(row),updated=rowUpdatedAt(row);
+   if(folders.length)item.source_folder_ids=folders;
+   if(updated)item.updated_at=updated;
    const old=items.get(link.id);
    if(!old||score>old.score){if(old&&!item.author)item.author=old.item.author;items.set(link.id,{score,item});}
    else if(!old.item.author&&item.author)old.item.author=item.author;
+   if(old){
+     const selected=items.get(link.id).item;
+     const memberships=[...new Set([...(old.item.source_folder_ids||[]),...folders])];
+     if(memberships.length)selected.source_folder_ids=memberships;
+     const latest=[old.item.updated_at,item.updated_at].filter(Boolean).sort().pop();
+     if(latest)selected.updated_at=latest;
+   }
  }
  return [...items.values()].map(entry=>entry.item);
 }"""

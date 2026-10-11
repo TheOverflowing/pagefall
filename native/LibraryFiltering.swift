@@ -16,6 +16,8 @@ struct LibraryState: Decodable, Equatable {
     var classification_loading: Bool?
     var classification_count: Int?
     var classification_basic_count: Int?
+    var folders: [LibraryFolder]?
+    var folder_id: String?
     static let empty = LibraryState(books: [], account: AccountInfo(state: "unknown"))
 
     static func cached(in directory: URL) throws -> LibraryState {
@@ -28,6 +30,11 @@ struct LibraryState: Decodable, Equatable {
             book.tags = tags[book.id] ?? book.tags
             book.classification = classifications[book.id]?.value ?? book.classification
             return book
+        }
+        if let organization = try? decoder.decode(LibraryOrganizationCache.self, from: Data(contentsOf: directory.appendingPathComponent("library-organization.json"))) {
+            organization.apply(to: &snapshot)
+        } else if let folders = snapshot.folders {
+            LibraryOrganizationCache(folders: folders).apply(to: &snapshot)
         }
         snapshot.syncing = false
         snapshot.classification_loading = false
@@ -59,6 +66,10 @@ struct LibraryBook: Decodable, Identifiable, Hashable {
     var cover: String?
     var tags: [String]?
     var classification: BookClassification?
+    var folder_ids: [String]?
+    var source_folder_ids: [String]?
+    var last_read_at: Double?
+    var updated_at: String?
 }
 
 struct BookClassification: Decodable, Hashable {
@@ -306,21 +317,36 @@ extension LibraryFilterSelection {
 }
 
 final class LibraryFilterIndex {
+    static let unfiledFolderID = "__unfiled"
+
+    private struct SortKey: Hashable {
+        let order: LibrarySortOrder
+        let ascending: Bool
+    }
+
     private struct Row {
         let book: LibraryBook
+        let ordinal: Int
         let tags: Set<String>
+        let folderIDs: Set<String>
         let publishedDate: Date?
         let publishedYear: Int?
+        let updatedAt: Double?
     }
 
     let books: [LibraryBook]
     let tags: [(name: String, count: Int)]
     let facetOptions: [LibraryFacet: [String]]
     let publicationYears: [Int]
+    let folderCounts: [String: Int]
+    let unfiledCount: Int
     private let rows: [Row]
+    private var orderedRows: [SortKey: [Row]] = [:]
     private var lastSelection: LibraryFilterSelection?
     private var lastQuery = ""
     private var lastDay: Date?
+    private var lastSort: SortKey?
+    private var lastFolderID: String?
     private var lastMatches: [LibraryBook] = []
 
     init(books: [LibraryBook]) {
@@ -329,10 +355,15 @@ final class LibraryFilterIndex {
         var counts: [String: Int] = [:]
         var facets: [LibraryFacet: Set<String>] = [:]
         var years: Set<Int> = []
+        var folders: [String: Int] = [:]
+        var unfiled = 0
         var prepared: [Row] = []
         prepared.reserveCapacity(books.count)
-        for book in books {
+        for (ordinal, book) in books.enumerated() {
             let tags = Set(book.tags ?? [])
+            let folderIDs = Set(book.folder_ids ?? [])
+            for folderID in folderIDs { folders[folderID, default: 0] += 1 }
+            if folderIDs.isEmpty { unfiled += 1 }
             for tag in tags { counts[tag, default: 0] += 1 }
             for facet in LibraryFacet.allCases {
                 if let value = book.classification?.value(for: facet), !value.isEmpty { facets[facet, default: []].insert(value) }
@@ -340,9 +371,11 @@ final class LibraryFilterIndex {
             let date = book.classification?.publishedDate
             let year = date.map { calendar.component(.year, from: $0) }
             if let year { years.insert(year) }
-            prepared.append(Row(book: book, tags: tags, publishedDate: date, publishedYear: year))
+            prepared.append(Row(book: book, ordinal: ordinal, tags: tags, folderIDs: folderIDs, publishedDate: date, publishedYear: year, updatedAt: LibraryOrganizationCache.date(book.updated_at)?.timeIntervalSince1970))
         }
         rows = prepared
+        folderCounts = folders
+        unfiledCount = unfiled
         let tagCounts: [(name: String, count: Int)] = counts.map { (name: $0.key, count: $0.value) }
         tags = tagCounts.sorted { $0.count != $1.count ? $0.count > $1.count : $0.name.localizedStandardCompare($1.name) == .orderedAscending }
         facetOptions = Dictionary(uniqueKeysWithValues: LibraryFacet.allCases.map { facet in
@@ -351,18 +384,24 @@ final class LibraryFilterIndex {
         publicationYears = years.sorted(by: >)
     }
 
-    func matchingBooks(_ selection: LibraryFilterSelection, query: String = "", now: Date = Date()) -> [LibraryBook] {
+    func matchingBooks(_ selection: LibraryFilterSelection, query: String = "", now: Date = Date(), sort: LibrarySortOrder = .platform, ascending: Bool = true, folderID: String? = nil) -> [LibraryBook] {
         let calendar = BookClassification.publicationCalendar
         let today = calendar.startOfDay(for: now)
-        if selection == lastSelection, query == lastQuery, today == lastDay { return lastMatches }
+        let sortKey = SortKey(order: sort, ascending: ascending)
+        if selection == lastSelection, query == lastQuery, today == lastDay, sortKey == lastSort, folderID == lastFolderID { return lastMatches }
         let activeFacets = LibraryFacet.allCases.compactMap { facet -> (LibraryFacet, Set<String>)? in
             guard let values = selection.facets[facet], !values.isEmpty else { return nil }
             return (facet, values)
         }
         let publicationStart = selection.publicationPeriods.compactMap { $0.startDate(today: today, calendar: calendar) }.min()
         let filteringDate = publicationStart != nil || !selection.publicationYears.isEmpty
-        let matches = rows.compactMap { row -> LibraryBook? in
+        let matches = sortedRows(for: sortKey).compactMap { row -> LibraryBook? in
             let book = row.book
+            if let folderID {
+                if folderID == Self.unfiledFolderID {
+                    if !row.folderIDs.isEmpty { return nil }
+                } else if !row.folderIDs.contains(folderID) { return nil }
+            }
             if !query.isEmpty, !book.title.localizedCaseInsensitiveContains(query), !book.author.localizedCaseInsensitiveContains(query) { return nil }
             for (facet, values) in activeFacets {
                 guard let value = book.classification?.value(for: facet), values.contains(value) else { return nil }
@@ -387,7 +426,53 @@ final class LibraryFilterIndex {
         lastSelection = selection
         lastQuery = query
         lastDay = today
+        lastSort = sortKey
+        lastFolderID = folderID
         lastMatches = matches
         return matches
+    }
+
+    private func sortedRows(for key: SortKey) -> [Row] {
+        if let cached = orderedRows[key] { return cached }
+        let result: [Row]
+        if key.order == .platform {
+            result = key.ascending ? rows : rows.reversed()
+        } else {
+            result = rows.sorted { left, right in
+                let comparison: ComparisonResult?
+                switch key.order {
+                case .title:
+                    let leftTitle = left.book.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let rightTitle = right.book.title.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if leftTitle.isEmpty != rightTitle.isEmpty { return !leftTitle.isEmpty }
+                    comparison = leftTitle.localizedStandardCompare(rightTitle)
+                case .updated, .recentReading, .wordCount, .favoriteCount:
+                    let leftValue = sortValue(left, order: key.order)
+                    let rightValue = sortValue(right, order: key.order)
+                    if (leftValue == nil) != (rightValue == nil) { return leftValue != nil }
+                    if let leftValue, let rightValue, leftValue != rightValue {
+                        comparison = leftValue < rightValue ? .orderedAscending : .orderedDescending
+                    } else { comparison = nil }
+                case .platform: comparison = nil
+                }
+                if let comparison, comparison != .orderedSame {
+                    return key.ascending ? comparison == .orderedAscending : comparison == .orderedDescending
+                }
+                if left.ordinal != right.ordinal { return left.ordinal < right.ordinal }
+                return left.book.id < right.book.id
+            }
+        }
+        orderedRows[key] = result
+        return result
+    }
+
+    private func sortValue(_ row: Row, order: LibrarySortOrder) -> Double? {
+        switch order {
+        case .updated: return row.updatedAt
+        case .recentReading: return row.book.last_read_at.flatMap { $0 > 0 ? $0 : nil }
+        case .wordCount: return row.book.classification?.word_count.flatMap { $0 >= 0 ? Double($0) : nil }
+        case .favoriteCount: return row.book.classification?.favorite_count.flatMap { $0 >= 0 ? Double($0) : nil }
+        case .title, .platform: return nil
+        }
     }
 }

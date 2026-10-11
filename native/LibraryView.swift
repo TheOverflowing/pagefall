@@ -6,6 +6,17 @@ struct LibraryRootView: View {
     @ObservedObject private var localization = Localization.shared
     private enum Page: String, CaseIterable { case library = "我的书架", downloads = "下载", translation = "翻译", account = "晋江账号" }
     @State private var page: Page? = .library
+    @AppStorage("library.layout") private var layout = "list"
+    @AppStorage("library.sort") private var sortRaw = "platform"
+    @AppStorage("library.sortAscending") private var sortAscending = true
+    @AppStorage("library.selectedFolder") private var selectedFolderID = ""
+    @AppStorage("library.foldersExpanded") private var foldersExpanded = true
+    @State private var managingBooks = false
+    @State private var selectedBookIDs: Set<String> = []
+    @State private var movingBooks = false
+    @State private var batchMessage: String?
+    @State private var folderEditor: LibraryFolderEditorRequest?
+    @State private var deletingFolder: LibraryFolder?
     @State private var search = ""
     @State private var filters = LibraryFilterSelection.load()
     @State private var showingFilters = false
@@ -16,12 +27,15 @@ struct LibraryRootView: View {
     @State private var showingUpdates = false
     @State private var platformSearch = ""
     @State private var chapterSelection: String?
+    @State private var requestedDirectoryID: String?
     private struct HistorySelection: Identifiable {
         let bookID: String
         let chapter: Chapter
         var id: String { bookID + "/" + chapter.id }
     }
     @State private var historySelection: HistorySelection?
+    @State private var versionsBook: Book?
+    @State private var exportBook: Book?
     @State private var translationBook: Book?
     @State private var glossaryBook: Book?
     @State private var translationSettings = false
@@ -51,7 +65,34 @@ struct LibraryRootView: View {
     }
     private var visibleBooks: [LibraryBook] {
         let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-        return model.libraryFilterIndex.matchingBooks(filters, query: query)
+        return model.libraryFilterIndex.matchingBooks(filters, query: query, sort: sortOrder, ascending: sortAscending, folderID: selectedFolderID.isEmpty ? nil : selectedFolderID)
+    }
+    private var sortOrder: LibrarySortOrder { LibrarySortOrder(rawValue: sortRaw) ?? .platform }
+    private var visibleBookIDs: Set<String> { Set(visibleBooks.map(\.id)) }
+    private var allBooksSelected: Bool { !visibleBookIDs.isEmpty && visibleBookIDs.isSubset(of: selectedBookIDs) }
+    private var folders: [LibraryFolder] { (model.libraryState.folders ?? []).sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending } }
+    private var folderTitle: String {
+        if selectedFolderID == LibraryFilterIndex.unfiledFolderID { return L("未分类") }
+        return folders.first { $0.id == selectedFolderID }?.name ?? L("我的书架")
+    }
+    private var sidebarSelection: Binding<String?> {
+        Binding(get: {
+            switch page ?? .library {
+            case .library: return selectedFolderID.isEmpty ? "library" : "folder:" + selectedFolderID
+            case .downloads: return "downloads"
+            case .translation: return "translation"
+            case .account: return nil
+            }
+        }, set: { value in
+            guard let value else { return }
+            if value == "downloads" { page = .downloads }
+            else if value == "translation" { page = .translation }
+            else {
+                selectedFolderID = value.hasPrefix("folder:") ? String(value.dropFirst(7)) : ""
+                model.closeBook()
+                page = .library
+            }
+        })
     }
     private var filtering: Bool { !search.isEmpty || !filters.isEmpty }
     private var downloadBooks: [Book] {
@@ -81,10 +122,23 @@ struct LibraryRootView: View {
     var body: some View {
         NavigationSplitView {
             VStack(spacing: 0) {
-                List(selection: $page) {
-                    Label(L("我的书架"), systemImage: "books.vertical").tag(Page.library)
-                    Label(L("下载"), systemImage: "arrow.down.circle").tag(Page.downloads)
-                    Label(L("翻译"), systemImage: "character.bubble").tag(Page.translation)
+                List(selection: sidebarSelection) {
+                    Label(L("我的书架"), systemImage: "books.vertical").tag("library")
+                    Label(L("下载"), systemImage: "arrow.down.circle").tag("downloads")
+                    Label(L("翻译"), systemImage: "character.bubble").tag("translation")
+                    Section(isExpanded: $foldersExpanded) {
+                        folderRow(id: LibraryFilterIndex.unfiledFolderID, name: L("未分类"), count: model.libraryFilterIndex.unfiledCount)
+                        ForEach(folders) { folder in
+                            folderRow(id: folder.id, name: folder.name, count: model.libraryFilterIndex.folderCounts[folder.id] ?? 0)
+                                .contextMenu {
+                                    Button(L("重命名…")) { folderEditor = LibraryFolderEditorRequest(folder: folder) }
+                                    Button(L("删除文件夹…"), role: .destructive) { deletingFolder = folder }
+                                }
+                        }
+                        Button { folderEditor = LibraryFolderEditorRequest(folder: nil) } label: {
+                            Label(L("新建文件夹…"), systemImage: "folder.badge.plus")
+                        }.buttonStyle(.plain).disabled(!model.connected)
+                    } header: { Text(L("文件夹")) }
                 }.listStyle(.sidebar)
                 if model.downloading || model.state.proofreading?.running == true || model.state.translation?.running == true { activity.padding(.horizontal, 14).padding(.bottom, 16) }
                 Divider()
@@ -140,7 +194,8 @@ struct LibraryRootView: View {
             LibraryFiltersView(index: model.libraryFilterIndex, query: search.trimmingCharacters(in: .whitespacesAndNewlines), initial: filters,
                 classificationLoading: model.libraryState.classification_loading == true,
                 classificationCount: model.libraryState.classification_count ?? 0,
-                basicClassificationCount: model.libraryState.classification_basic_count ?? model.libraryState.classification_count ?? 0) { filters = $0 }
+                basicClassificationCount: model.libraryState.classification_basic_count ?? model.libraryState.classification_count ?? 0,
+                folderID: selectedFolderID.isEmpty ? nil : selectedFolderID) { filters = $0 }
         }
         .sheet(item: $model.reading) { chapter in OnlineReadingView(model: model, chapter: chapter) }
         .sheet(item: $model.editing) { chapter in ChapterView(model: model, chapter: chapter) }
@@ -148,11 +203,182 @@ struct LibraryRootView: View {
             ChapterHistoryView(model: model, bookID: selection.bookID, chapterID: selection.chapter.id, title: selection.chapter.title)
         }
         .sheet(item: $translationBook) { book in TranslationSettingsView(model: model, book: book) }
+        .sheet(item: $versionsBook) { book in BookVersionsView(model: model, book: book) }
+        .sheet(item: $exportBook) { book in BookExportView(model: model, book: book) }
+        .sheet(item: $folderEditor) { request in
+            LibraryFolderEditor(folder: request.folder) { name in
+                if let id = try await model.saveLibraryFolder(id: request.folder?.id, name: name) {
+                    selectedFolderID = id
+                    page = .library
+                    model.closeBook()
+                }
+            }
+        }
+        .confirmationDialog(L("删除文件夹？"), isPresented: Binding(get: { deletingFolder != nil }, set: { if !$0 { deletingFolder = nil } }), presenting: deletingFolder) { folder in
+            Button(L("删除“\(folder.name)”"), role: .destructive) {
+                Task {
+                    do {
+                        try await model.deleteLibraryFolder(folder.id)
+                        if selectedFolderID == folder.id { selectedFolderID = LibraryFilterIndex.unfiledFolderID }
+                    } catch { model.notice = localizedError(error) }
+                }
+            }
+        } message: { _ in Text(L("文件夹中的书籍会保留，并移到未分类。")) }
         .sheet(item: $glossaryBook) { book in GlossaryView(model: model, book: book) }
         .sheet(isPresented: $translationSettings) { TranslationSettingsView(model: model, book: nil) }
         .sheet(isPresented: $jinjiangSettings) { JinjiangSettingsView(model: model) }
-        .onChange(of: contentIdentity) { _, _ in chapterSelection = nil; detailTab = 0 }
+        .onChange(of: contentIdentity) { _, _ in
+            chapterSelection = nil
+            if let identifier = requestedDirectoryID, model.detail?.id == identifier {
+                detailTab = 1
+                requestedDirectoryID = nil
+            } else { detailTab = 0 }
+        }
         .onChange(of: filters) { _, selection in selection.save() }
+        .onChange(of: sortRaw) { _, _ in sortAscending = sortOrder.defaultAscending }
+        .onChange(of: visibleBookIDs) { _, ids in selectedBookIDs.formIntersection(ids) }
+        .onChange(of: page) { _, _ in finishManagingBooks() }
+    }
+
+    private func folderRow(id: String, name: String, count: Int) -> some View {
+        HStack {
+            Label(name, systemImage: id == LibraryFilterIndex.unfiledFolderID ? "tray" : "folder")
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Text(count.formatted()).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+        .tag("folder:" + id)
+        .contentShape(Rectangle())
+        .dropDestination(for: String.self) { items, _ in
+            let known = Set(model.libraryState.books.map(\.id))
+            let books = items.filter { known.contains($0) }
+            guard model.connected, !books.isEmpty else { return false }
+            model.moveLibraryBooks(books, to: id == LibraryFilterIndex.unfiledFolderID ? nil : id)
+            return true
+        }
+    }
+
+    private var shelfToolbar: some View {
+        HStack(spacing: 12) {
+            if managingBooks {
+                Button(allBooksSelected ? L("取消全选") : L("全选当前结果")) {
+                    selectedBookIDs = allBooksSelected ? [] : visibleBookIDs
+                    batchMessage = nil
+                }.disabled(visibleBooks.isEmpty || movingBooks)
+                Text(batchMessage ?? L("已选 \(selectedBookIDs.count) 本"))
+                    .font(.caption).foregroundStyle(.secondary).lineLimit(1).monospacedDigit()
+                if movingBooks { ProgressView().controlSize(.small).accessibilityLabel(L("正在移动书籍…")) }
+                Menu {
+                    Button(L("未分类")) { moveSelectedBooks(to: nil) }
+                    ForEach(folders) { folder in
+                        Button(folder.name) { moveSelectedBooks(to: folder.id) }
+                    }
+                } label: { Label(L("移到文件夹"), systemImage: "folder") }
+                    .disabled(selectedBookIDs.isEmpty || movingBooks || !model.connected)
+                Spacer(minLength: 4)
+                Button(L("完成")) { finishManagingBooks() }.disabled(movingBooks)
+            } else {
+                shelfSortMenu
+                Spacer()
+                Button { managingBooks = true; batchMessage = nil } label: {
+                    Label(L("批量管理"), systemImage: "checkmark.circle")
+                }.labelStyle(.iconOnly).help(L("批量管理"))
+                    .accessibilityLabel(L("批量管理")).disabled(visibleBooks.isEmpty)
+            }
+            Picker(L("书架显示方式"), selection: $layout) {
+                Image(systemName: "list.bullet").tag("list").help(L("列表模式")).accessibilityLabel(L("列表模式"))
+                Image(systemName: "square.grid.2x2").tag("covers").help(L("封面模式")).accessibilityLabel(L("封面模式"))
+            }.pickerStyle(.segmented).labelsHidden().frame(width: 74)
+        }.controlSize(.small).padding(.horizontal, 24).padding(.vertical, 10)
+    }
+
+    private var shelfSortMenu: some View {
+        Menu {
+                Picker(L("排序方式"), selection: $sortRaw) {
+                    ForEach(LibrarySortOrder.allCases) { order in Text(LS(order.title)).tag(order.rawValue) }
+                }.pickerStyle(.inline)
+                if sortOrder != .platform {
+                    Divider()
+                    Picker(L("排序方向"), selection: $sortAscending) {
+                        Text(sortOrder == .updated || sortOrder == .recentReading ? L("从新到旧") : L("降序")).tag(false)
+                        Text(sortOrder == .updated || sortOrder == .recentReading ? L("从旧到新") : L("升序")).tag(true)
+                    }.pickerStyle(.inline)
+                }
+            } label: {
+                Label(LS(sortOrder.title), systemImage: "arrow.up.arrow.down")
+        }.fixedSize().accessibilityLabel(L("书架排序"))
+    }
+
+    private func finishManagingBooks() {
+        managingBooks = false
+        selectedBookIDs = []
+        batchMessage = nil
+    }
+
+    private func activateBook(_ book: LibraryBook) {
+        if managingBooks {
+            if selectedBookIDs.contains(book.id) { selectedBookIDs.remove(book.id) }
+            else { selectedBookIDs.insert(book.id) }
+            batchMessage = nil
+        } else { model.openBook(id: book.id) }
+    }
+
+    private func moveSelectedBooks(to folderID: String?) {
+        let ids = visibleBooks.map(\.id).filter { selectedBookIDs.contains($0) }
+        guard !ids.isEmpty, !movingBooks else { return }
+        movingBooks = true
+        batchMessage = nil
+        Task {
+            defer { movingBooks = false }
+            do {
+                try await model.assignLibraryBooks(ids, to: folderID)
+                selectedBookIDs.subtract(ids)
+                if managingBooks { batchMessage = L("已移动 \(ids.count) 本小说") }
+            } catch { model.notice = localizedError(error) }
+        }
+    }
+
+    @ViewBuilder private func shelfBookInteractions<Content: View>(_ book: LibraryBook, @ViewBuilder content: () -> Content) -> some View {
+        if managingBooks { content().disabled(movingBooks) }
+        else { content().contextMenu { bookFolderMenu(book) }.draggable(book.id) }
+    }
+
+    @ViewBuilder private func bookFolderMenu(_ book: LibraryBook) -> some View {
+        Button(L("查看小说详情")) { model.openBook(id: book.id) }
+        if model.queued.contains(where: { $0.id == book.id }) || (model.downloading && model.state.book?.id == book.id) {
+            Button(L("查看进度")) { page = .downloads }
+        } else {
+            Button(L("下载整本")) { model.requestDownload(url: book.url) }.disabled(!model.connected || model.sending)
+        }
+        Divider()
+        Menu(L("移到文件夹")) {
+            Button { model.moveLibraryBooks([book.id], to: nil) } label: {
+                if (book.folder_ids ?? []).isEmpty { Label(L("未分类"), systemImage: "checkmark") }
+                else { Text(L("未分类")) }
+            }
+            ForEach(folders) { folder in
+                Button { model.moveLibraryBooks([book.id], to: folder.id) } label: {
+                    if book.folder_ids?.contains(folder.id) == true { Label(folder.name, systemImage: "checkmark") }
+                    else { Text(folder.name) }
+                }
+            }
+        }.disabled(!model.connected)
+    }
+
+    private func sortDetail(_ book: LibraryBook) -> String {
+        switch sortOrder {
+        case .updated:
+            guard let date = LibraryOrganizationCache.date(book.updated_at) else { return "" }
+            return L("更新于 \(date.formatted(.dateTime.locale(localization.locale).year().month().day()))")
+        case .recentReading:
+            guard let timestamp = book.last_read_at else { return "" }
+            return L("读于 \(Date(timeIntervalSince1970: timestamp).formatted(.dateTime.locale(localization.locale).month().day().hour().minute()))")
+        case .wordCount:
+            return book.classification?.word_count.map { L("\($0.formatted()) 字") } ?? ""
+        case .favoriteCount:
+            return book.classification?.favorite_count.map { L("\($0.formatted()) 收藏") } ?? ""
+        default: return ""
+        }
     }
 
     private var contentHeader: some View {
@@ -162,7 +388,7 @@ struct LibraryRootView: View {
                     .help(L("返回书架"))
                 Text(L("小说详情")).font(.headline)
             } else {
-                Text(LS((page ?? .library).rawValue)).font(.title2.weight(.semibold))
+                Text(page == .library ? folderTitle : LS((page ?? .library).rawValue)).font(.title2.weight(.semibold)).lineLimit(1)
             }
             Spacer(minLength: 16)
             if page == .library, model.detail == nil {
@@ -234,6 +460,7 @@ struct LibraryRootView: View {
 
     private var library: some View {
         VStack(spacing: 0) {
+            shelfToolbar
             if !filters.isEmpty { selectedFilterBar }
             if model.libraryState.classification_loading == true && !filters.isEmpty {
                 HStack(spacing: 6) {
@@ -262,14 +489,14 @@ struct LibraryRootView: View {
             } else if visibleBooks.isEmpty {
                 VStack(spacing: 14) {
                     Image(systemName: filtering ? "magnifyingglass" : "books.vertical").font(.system(size: 34, weight: .light)).foregroundStyle(.tertiary)
-                    Text(filtering ? L("未找到匹配的小说") : L("你的故事，都在这里")).font(.title3.weight(.medium))
+                    Text(filtering ? L("未找到匹配的小说") : !selectedFolderID.isEmpty ? L("文件夹里还没有小说") : L("你的故事，都在这里")).font(.title3.weight(.medium))
                     Text(emptyLibraryMessage)
                         .foregroundStyle(.secondary).multilineTextAlignment(.center)
                     if !filters.isEmpty {
                         Button(L("调整筛选")) { showingFilters = true }
                         Button(L("清除筛选")) { filters = LibraryFilterSelection() }.buttonStyle(.link)
                     }
-                    if !filtering {
+                    if !filtering && selectedFolderID.isEmpty {
                         HStack(spacing: 12) {
                             Button(accountConnected ? L("刷新书架") : L("连接账号")) { if accountConnected { model.refreshLibrary() } else { page = .account } }
                                 .buttonStyle(.borderedProminent).disabled(!model.connected || syncing)
@@ -279,23 +506,35 @@ struct LibraryRootView: View {
                 }.padding(32).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    if layout == "covers" {
+                        LazyVGrid(columns: [GridItem(.adaptive(minimum: 138, maximum: 172), spacing: 24, alignment: .top)], alignment: .leading, spacing: 24) {
+                            ForEach(visibleBooks) { book in
+                                shelfBookInteractions(book) {
+                                    LibraryCoverCard(book: book, detail: sortDetail(book), selecting: managingBooks, selected: selectedBookIDs.contains(book.id), open: { activateBook(book) })
+                                }
+                            }
+                        }.padding(24)
+                    } else {
+                      LazyVStack(spacing: 0) {
                         ForEach(visibleBooks) { book in
-                            LibraryBookRow(book: book, queued: model.queued.contains { $0.id == book.id },
+                          shelfBookInteractions(book) {
+                            LibraryBookRow(book: book, detail: sortDetail(book), selecting: managingBooks, selected: selectedBookIDs.contains(book.id), queued: model.queued.contains { $0.id == book.id },
                                 downloading: model.downloading && model.state.book?.id == book.id,
                                 canDownload: model.connected && !model.sending, language: localization.identifier,
-                                open: { model.openBook(id: book.id) },
+                                open: { activateBook(book) },
                                 download: { model.requestDownload(url: book.url) },
                                 showDownloads: { page = .downloads })
                                 .equatable()
+                          }
                         }
                     }.padding(.horizontal, 24).padding(.top, 5)
+                    }
                 }
                 // Reset only the results scroller; shared covers and editor state survive.
-                .id(search + "|" + filters.identity)
+                .id(search + "|" + filters.identity + "|" + selectedFolderID + "|" + sortRaw + "|" + String(sortAscending) + "|" + layout)
                 .transaction { $0.animation = nil }
                 HStack {
-                    Text(filtering ? L("找到 \(visibleBooks.count) 本小说") : L("\(model.libraryState.books.count) 本小说"))
+                    Text(filtering ? L("找到 \(visibleBooks.count) 本小说") : L("\(visibleBooks.count) 本小说"))
                     if model.libraryState.complete == false { Text(L("· 收藏尚未全部同步")) }
                     Spacer()
                 }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 24).padding(.vertical, 12)
@@ -306,65 +545,17 @@ struct LibraryRootView: View {
     private var emptyLibraryMessage: String {
         if !filters.isEmpty { return L("试试其他筛选条件。") }
         if !search.isEmpty { return L("试试其他书名或作者。") }
+        if !selectedFolderID.isEmpty { return L("将书籍拖到左侧文件夹，或右键选择“移到文件夹”。") }
         if let message = model.libraryState.message, !message.isEmpty, model.libraryState.account.state == "error" { return LM(message) }
         return accountConnected ? L("刷新晋江收藏，或添加一本小说的链接。") : L("连接晋江账号后，你收藏的小说会显示在这里。")
     }
 
     private var downloads: some View {
-        Group {
-            if downloadBooks.isEmpty && model.queued.isEmpty {
-                ContentUnavailableView(L("还没有下载"), systemImage: "arrow.down.circle", description: Text(L("从书架选择一本小说，即可在这里查看进度。")))
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 0) {
-                        ForEach(downloadBooks, id: \.id) { book in
-                            let value = progress(for: book)
-                            let active = isActive(book)
-                            VStack(alignment: .leading, spacing: 12) {
-                                HStack(alignment: .top) {
-                                    VStack(alignment: .leading, spacing: 5) {
-                                        Text(book.title).font(.headline)
-                                        if let platform = book.platform_name { Text(LS(platform)).font(.caption).foregroundStyle(.secondary) }
-                                        Text(value.total > 0 ? L("已保存 \(value.done) / \(value.total) 章") : L("正在准备目录"))
-                                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                                    }
-                                    Spacer()
-                                    if active {
-                                        Button(L("暂停")) { model.action("pause", payload: [:]) }.disabled(model.sending)
-                                    } else if isQueued(book) {
-                                        Text(L("已加入队列")).font(.caption).foregroundStyle(.secondary)
-                                    } else if !savedAll(book) {
-                                        Button(value.done > 0 ? L("继续下载") : L("下载整本")) { model.requestDownload(url: book.url) }.disabled(!model.connected || model.sending)
-                                    }
-                                    exportMenu(book)
-                                }
-                                if active && value.total == 0 { ProgressView() }
-                                else { ProgressView(value: Double(value.done), total: Double(max(1, value.total))) }
-                                HStack {
-                                    Text(active ? LM(model.state.message) : (savedAll(book) ? L("章节已全部保存") : L("进度已保存")))
-                                        .foregroundStyle(.secondary).lineLimit(2)
-                                    if !active, let review = value.review, review > 0 {
-                                        Text(L("· \(review) 章待校对")).foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Button(L("查看章节")) { page = .library; model.openBook(id: book.id) }.buttonStyle(.link)
-                                }.font(.caption)
-                                proofreadingControls(book, compact: true)
-                                if book.translation != nil || model.translating(book.id) { translationControls(book, compact: true) }
-                            }.padding(.vertical, 22)
-                            Divider()
-                        }
-                        if !model.queued.isEmpty {
-                            Text(L("等待下载")).font(.subheadline.weight(.medium)).padding(.top, 24).padding(.bottom, 12)
-                            ForEach(model.queued, id: \.id) { item in
-                                HStack { Text(model.libraryState.books.first(where: { $0.id == item.id })?.title ?? L("作品 \(item.id)")); Spacer(); Text(L("排队中")).foregroundStyle(.secondary) }
-                                    .font(.subheadline).padding(.vertical, 8)
-                            }
-                        }
-                    }.padding(.horizontal, 24)
-                }
-            }
-        }
+        DownloadsView(model: model, openBook: { book in
+            requestedDirectoryID = book.id
+            page = .library
+            model.openBook(id: book.id)
+        }, openVersions: { versionsBook = $0 }, exportControl: { book in exportMenu(book, compact: true) })
     }
 
     private var translationWorkspace: some View {
@@ -431,8 +622,14 @@ struct LibraryRootView: View {
                     }
                     HStack {
                         Button(L("开始阅读")) { if let first = book.chapters.first { model.readChapter(book, first) } }
-                            .buttonStyle(.borderedProminent).disabled(book.chapters.isEmpty || model.readingChapter)
-                        if !savedAll(book) {
+                            .buttonStyle(.borderedProminent).disabled(!model.canReadChapter(book.chapters.first))
+                        if savedAll(book) {
+                            Menu(L("下载")) {
+                                Button(L("重新下载")) { model.requestDownload(url: book.url, refresh: true) }
+                                    .disabled(isQueued(book) || isActive(book) || model.sending)
+                                Button(L("下载版本…")) { versionsBook = book }
+                            }
+                        } else {
                             Button(isQueued(book) || isActive(book) ? L("查看下载") : L("下载整本")) {
                                 if isQueued(book) || isActive(book) { page = .downloads } else { model.requestDownload(url: book.url) }
                             }.disabled(!model.connected || model.sending)
@@ -506,17 +703,21 @@ struct LibraryRootView: View {
                         let updated = chapter.source_updated_at ?? ""
                         Text(updated.isEmpty ? "—" : updated).font(.caption).monospacedDigit().foregroundStyle(.secondary)
                     }.width(min: 145, ideal: 155)
-                    TableColumn(L("状态")) { chapter in Text(["done", "review", "reviewed"].contains(chapter.state) ? chapter.label : L("在线读取")).foregroundStyle(chapter.color) }.width(min: 100, ideal: 125)
+                    TableColumn(L("状态")) { chapter in
+                        let saved = ["done", "review", "reviewed"].contains(chapter.state)
+                        Text(saved ? chapter.label : chapter.readable_locally == true ? L("本机副本") : L("在线读取"))
+                            .foregroundStyle(!saved && chapter.readable_locally == true ? .secondary : chapter.color)
+                    }.width(min: 100, ideal: 125)
                     TableColumn(L("译文")) { chapter in Text(chapter.translation?.label ?? "—").foregroundStyle(.secondary) }.width(100)
                 }.contextMenu(forSelectionType: String.self) { selected in
                     Button(L("阅读本章")) { if let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { model.readChapter(book, chapter) } }
-                        .disabled(selected.isEmpty || model.readingChapter || isProcessing(book))
+                        .disabled(!model.canReadChapter(book.chapters.first { selected.contains($0.id) }))
                     Button(L("历史版本…")) { if let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { historySelection = HistorySelection(bookID: book.id, chapter: chapter) } }
                         .disabled(selected.isEmpty)
                     Button(L("标记更新已读")) { if let id = selected.first { model.markChapterUpdateRead(bookID: book.id, chapterID: id) } }
                         .disabled(!book.chapters.contains { selected.contains($0.id) && $0.update_status != nil })
                 } primaryAction: { selected in
-                    if !isProcessing(book), let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { model.readChapter(book, chapter) }
+                    if let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { model.readChapter(book, chapter) }
                 }
                 HStack {
                     if let chapter = book.chapters.first(where: { $0.id == chapterSelection }), chapter.update_status != nil {
@@ -526,37 +727,17 @@ struct LibraryRootView: View {
                     Button(L("历史版本…")) { if let chapter = book.chapters.first(where: { $0.id == chapterSelection }) { historySelection = HistorySelection(bookID: book.id, chapter: chapter) } }
                         .disabled(chapterSelection == nil)
                     Button(L("阅读本章")) { if let chapter = book.chapters.first(where: { $0.id == chapterSelection }) { model.readChapter(book, chapter) } }
-                        .disabled(chapterSelection == nil || model.readingChapter || isProcessing(book))
+                        .disabled(!model.canReadChapter(book.chapters.first { $0.id == chapterSelection }))
                 }.padding(16)
             }
         }
     }
 
-    private func exportMenu(_ book: Book) -> some View {
+    private func exportMenu(_ book: Book, compact: Bool = false) -> some View {
         let value = progress(for: book)
-        return Menu(value.done > 0 && value.done < value.total ? L("导出已保存章节…") : L("导出…")) {
-            Toggle(L("纯净模式"), isOn: $model.cleanExport)
-
-                .accessibilityHint(L("关闭后附带导出与校对报告"))
-            Divider()
-            if book.translation != nil {
-                Section(L("译文")) {
-                    Button(L("电子书 · EPUB")) { model.export("epub", bookID: book.id, variant: "translation") }
-                    Button(L("纯文本 · TXT")) { model.export("txt", bookID: book.id, variant: "translation") }
-                    Button("Markdown") { model.export("md", bookID: book.id, variant: "translation") }
-                }.disabled((book.translation?.done ?? 0) == 0 && (book.translation?.stale ?? 0) == 0)
-                Section(L("原文")) {
-                    Button(L("电子书 · EPUB")) { model.export("epub", bookID: book.id) }
-                    Button(L("纯文本 · TXT")) { model.export("txt", bookID: book.id) }
-                    Button("Markdown") { model.export("md", bookID: book.id) }
-                }
-            } else {
-            Button(L("电子书 · EPUB")) { model.export("epub", bookID: book.id) }
-            Button(L("纯文本 · TXT")) { model.export("txt", bookID: book.id) }
-            Button("Markdown") { model.export("md", bookID: book.id) }
-            }
-        }.fixedSize().disabled(value.done == 0 || isProcessing(book) || model.translating(book.id) || model.sending)
-            .help(model.proofreading(book.id) ? L("自动校对完成或暂停后即可导出") : isActive(book) ? L("暂停下载后即可导出") : "")
+        return Button(!compact && value.done > 0 && value.done < value.total ? L("导出已保存章节…") : L("导出…")) {
+            exportBook = book
+        }.fixedSize().disabled(value.done == 0 || model.sending)
     }
 
     @ViewBuilder
@@ -824,6 +1005,9 @@ struct LibraryRootView: View {
 
 private struct LibraryBookRow: View, Equatable {
     let book: LibraryBook
+    let detail: String
+    let selecting: Bool
+    let selected: Bool
     let queued: Bool
     let downloading: Bool
     let canDownload: Bool
@@ -836,28 +1020,39 @@ private struct LibraryBookRow: View, Equatable {
         lhs.book.id == rhs.book.id && lhs.book.title == rhs.book.title && lhs.book.author == rhs.book.author
             && lhs.book.url == rhs.book.url && lhs.book.cover == rhs.book.cover
             && lhs.queued == rhs.queued && lhs.downloading == rhs.downloading
-            && lhs.canDownload == rhs.canDownload && lhs.language == rhs.language
+            && lhs.canDownload == rhs.canDownload && lhs.language == rhs.language && lhs.detail == rhs.detail
+            && lhs.selecting == rhs.selecting && lhs.selected == rhs.selected
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 14) {
-                Button(action: open) { CoverImageView(source: book.cover, title: book.title) }
-                    .buttonStyle(.plain).accessibilityLabel(L("\(book.title)，查看小说详情"))
+                if selecting {
+                    Toggle(L("选择\(book.title)"), isOn: Binding(get: { selected }, set: { _ in open() }))
+                        .toggleStyle(.checkbox).labelsHidden()
+                }
+                Button(action: open) { CoverImageView(source: book.cover, title: book.title, reloadMenu: false) }
+                    .buttonStyle(.plain).accessibilityLabel(selecting ? L("选择\(book.title)") : L("\(book.title)，查看小说详情"))
+                    .accessibilityValue(selecting ? (selected ? L("已选择") : L("未选择")) : "")
                 Button(action: open) {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(book.title).font(.system(size: 14, weight: .medium)).foregroundStyle(.primary).lineLimit(2)
                         Text(book.author.isEmpty ? L("作者未提供") : book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                        if !detail.isEmpty { Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                }.buttonStyle(.plain).accessibilityLabel(L("\(book.title)，\(book.author.isEmpty ? L("作者未提供") : book.author)，查看小说"))
-                if queued {
+                }.buttonStyle(.plain).accessibilityLabel(selecting ? L("选择\(book.title)") : L("\(book.title)，\(book.author.isEmpty ? L("作者未提供") : book.author)，查看小说"))
+                    .accessibilityValue(selecting ? (selected ? L("已选择") : L("未选择")) : "")
+                if !selecting {
+                  if queued {
                     Text(L("已加入队列")).font(.caption).foregroundStyle(.secondary)
                 } else if downloading {
                     Button(L("查看进度"), action: showDownloads).accessibilityLabel(L("查看\(book.title)的下载进度"))
                 } else {
                     Button(L("下载整本"), action: download).disabled(!canDownload).accessibilityLabel(L("下载\(book.title)"))
+                  }
                 }
             }.padding(.vertical, 14)
+                .background(selecting && selected ? Color.accentColor.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 6))
             Divider()
         }
     }
@@ -872,6 +1067,12 @@ private enum CoverResult {
 @MainActor
 private final class CoverStore {
     static let shared = CoverStore()
+    // Cover misses may wait on the source site; keep them out of the API connection pool.
+    private static let imageSession: URLSession = {
+        let configuration = URLSessionConfiguration.default
+        configuration.httpMaximumConnectionsPerHost = 4
+        return URLSession(configuration: configuration)
+    }()
     private var images = NSCache<NSURL, NSImage>()
     private var terminal: [URL: (result: CoverResult, date: Date)] = [:]
     private var flights: [URL: Task<CoverResult, Never>] = [:]
@@ -906,7 +1107,7 @@ private final class CoverStore {
             var request = URLRequest(url: url, cachePolicy: retry ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy, timeoutInterval: 18)
             request.setValue("image/*", forHTTPHeaderField: "Accept")
             do {
-                let (data, response) = try await URLSession.shared.data(for: request)
+                let (data, response) = try await imageSession.data(for: request)
                 guard let http = response as? HTTPURLResponse else { return .failed }
                 if http.statusCode == 404 { return .missing }
                 if (200..<300).contains(http.statusCode), let image = NSImage(data: data) { return .image(image) }
@@ -926,9 +1127,12 @@ private final class CoverStore {
     }
 }
 
-private struct CoverImageView: View {
+struct CoverImageView: View {
     let source: String?
     let title: String
+    var width: CGFloat = 46
+    var height: CGFloat = 64
+    var reloadMenu = true
     @State private var result: CoverResult?
     @State private var loading = true
     @ObservedObject private var localization = Localization.shared
@@ -941,14 +1145,24 @@ private struct CoverImageView: View {
 
     var body: some View {
         Group {
+            if reloadMenu {
+                cover.contextMenu {
+                    Button(L("重新载入封面")) { Task { await load(retry: true) } }.disabled(loading || source == nil)
+                }
+            } else { cover }
+        }
+    }
+
+    private var cover: some View {
+        Group {
             if case .image(let image) = result {
                 Image(nsImage: image).resizable().scaledToFill().accessibilityHidden(true)
             } else {
                 ZStack(alignment: .bottomTrailing) {
                     Rectangle().fill(Color(nsColor: .textBackgroundColor))
                     VStack(spacing: 5) {
-                        Text(String(title.prefix(2))).font(.system(size: 14, weight: .medium, design: .serif)).lineLimit(2).foregroundStyle(.secondary)
-                        Rectangle().fill(Color.primary.opacity(0.12)).frame(width: 16, height: 1)
+                        Text(String(title.prefix(2))).font(.system(size: max(14, width * 0.16), weight: .medium, design: .serif)).lineLimit(2).foregroundStyle(.secondary)
+                        Rectangle().fill(Color.primary.opacity(0.12)).frame(width: width / 3, height: 1)
                     }.padding(6).frame(maxWidth: .infinity, maxHeight: .infinity)
                     if loading { ProgressView().controlSize(.mini).padding(3) }
                     else if failed {
@@ -959,14 +1173,11 @@ private struct CoverImageView: View {
                     }
                 }.help(help)
             }
-        }.frame(width: 46, height: 64)
-            .clipped().clipShape(RoundedRectangle(cornerRadius: 3))
-            .overlay { RoundedRectangle(cornerRadius: 3).strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5) }
+        }.frame(width: width, height: height)
+            .clipped().clipShape(RoundedRectangle(cornerRadius: width > 80 ? 6 : 3))
+            .overlay { RoundedRectangle(cornerRadius: width > 80 ? 6 : 3).strokeBorder(Color.primary.opacity(0.09), lineWidth: 0.5) }
             .shadow(color: .black.opacity(0.05), radius: 2, x: 0, y: 1)
             .task(id: source) { await load(retry: false) }
-            .contextMenu {
-                Button(L("重新载入封面")) { Task { await load(retry: true) } }.disabled(loading || source == nil)
-            }
     }
 
     private func load(retry: Bool) async {

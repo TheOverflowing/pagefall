@@ -7,10 +7,11 @@ struct ChapterVersionSummary: Decodable, Identifiable {
     var source_updated_at: String?
     var kind: String
     var characters: Int
+    var method: String?
 
     var kindLabel: String {
         switch kind {
-        case "source": return L("读取正文")
+        case "source": return acquisitionLabel(method)
         case "edit": return L("手动校对")
         case "proofread": return L("自动校对")
         case "proofread_undo": return L("撤销校对")
@@ -53,6 +54,8 @@ struct ChapterHistoryView: View {
     @State private var text = ""
     @State private var difference: ChapterVersionDiff?
     @State private var error: String?
+    @State private var confirmingDelete = false
+    @State private var deleting = false
 
     private var selectedVersion: ChapterVersionSummary? { versions.first { $0.id == selectedID } }
     private var selectionKey: String { "\(comparing)-\(previousID)-\(selectedID)" }
@@ -107,6 +110,9 @@ struct ChapterHistoryView: View {
         .frame(minWidth: 760, idealWidth: 860, minHeight: 540, idealHeight: 680)
         .task { await loadVersions() }
         .task(id: selectionKey) { await loadContent() }
+        .confirmationDialog(L("删除所选版本？"), isPresented: $confirmingDelete) {
+            Button(L("删除版本"), role: .destructive) { Task { await deleteVersion() } }
+        } message: { Text(L("仅删除这份存档，当前正文和其他版本会保留。")) }
     }
 
     private var versionControls: some View {
@@ -117,6 +123,10 @@ struct ChapterHistoryView: View {
                     Image(systemName: "arrow.right").foregroundStyle(.secondary).accessibilityHidden(true)
                 }
                 versionPicker(L("查看版本"), selection: $selectedID)
+                Button(role: .destructive) { confirmingDelete = true } label: {
+                    Image(systemName: "trash")
+                }.accessibilityLabel(L("删除版本")).help(L("删除版本"))
+                    .disabled(selectedID.isEmpty || deleting || loadingList)
             }
             if comparing, let difference, !loadingContent {
                 HStack(spacing: 16) {
@@ -201,11 +211,40 @@ struct ChapterHistoryView: View {
                 let response: ChapterVersionText = try await model.request("/api/chapter-version?" + query + "&version_id=" + selectedID)
                 guard !Task.isCancelled, requestedSelection == selectionKey else { return }
                 text = response.text
+                model.recordReading(bookID: bookID)
             }
         } catch {
             guard !Task.isCancelled, requestedSelection == selectionKey else { return }
             self.error = localizedError(error)
         }
         loadingContent = false
+    }
+
+    @MainActor private func deleteVersion() async {
+        let identifier = selectedID
+        deleting = true
+        defer { deleting = false }
+        do {
+            let response: ChapterVersionList = try await model.request("/api/chapter-version-delete", data: ["book_id": bookID, "chapter_id": chapterID, "version_id": identifier])
+            versions = response.versions
+            selectedID = versions.first?.id ?? ""
+            previousID = versions.dropFirst().first?.id ?? selectedID
+            if versions.count < 2 { comparing = false }
+            text = ""
+            difference = nil
+            error = nil
+            loadingContent = false
+            await model.refreshState()
+        } catch { self.error = localizedError(error) }
+    }
+}
+
+func acquisitionLabel(_ method: String?) -> String {
+    switch method {
+    case "ocr": return L("OCR 识别")
+    case "jjwxc_api", "api": return L("App 接口")
+    case "text", "jjwxc_upstream", "upstream_text": return L("网页正文")
+    case "mixed": return L("混合来源")
+    default: return L("读取正文")
     }
 }

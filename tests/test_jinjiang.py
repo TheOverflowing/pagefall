@@ -128,6 +128,37 @@ class UpstreamParserTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.calls),1)
         self.assertEqual(self.calls[0][1]['max_redirects'],0)
 
+    async def test_blank_reader_bootstraps_locally_then_fetches_only_requested_chapter(self):
+        await self.page.goto('about:blank')
+        self.reader.goto=AsyncMock(side_effect=AssertionError('Unnecessary rendered page navigation'))
+        result=await self.reader.capture(self.chapter,Path(self.temp.name)/'capture',mode='auto')
+        self.assertEqual(result['text'],TEXT)
+        self.assertEqual(result['method'],'jjwxc_upstream')
+        self.assertEqual(await self.page.locator('body').inner_text(),'')
+        self.assertEqual([call[0] for call in self.calls],[URL])
+        self.assertEqual(self.page.url,'https://www.jjwxc.net/onebook.php?novelid=42')
+        self.assertIsNone(self.reader._jinjiang_scope)
+
+    async def test_parser_failure_after_local_bootstrap_still_renders_real_page_for_ocr(self):
+        await self.page.goto('about:blank')
+        self.reader.hydrate_session=False
+        self.html=f'<div id="paragraph_comment_content" style="width:700px;line-height:35px">{TEXT}</div>'
+        with patch.object(jinjiang,'read',return_value=None),patch('novelist.browser.recognize_image',return_value=(TEXT,[])) as ocr:
+            result=await self.reader.capture({**self.chapter,'vip':True},Path(self.temp.name)/'fallback',mode='auto')
+        self.assertEqual(self.page.url,URL)
+        self.assertEqual(await self.page.locator('#paragraph_comment_content').inner_text(),TEXT)
+        self.assertEqual(result['method'],'ocr');ocr.assert_awaited_once()
+
+    async def test_scan_after_local_bootstrap_loads_actual_directory(self):
+        await self.page.goto('about:blank')
+        self.reader.hydrate_session=False
+        await self.reader._prepare_jinjiang(self.chapter)
+        self.html='<table><tr><td><a href="'+URL+'">第一章</a></td><td>35</td><td>2026-10-10 10:00:00</td></tr></table>'
+        with patch.object(jinjiang,'invoke',return_value=None),patch('novelist.catalog.read_public_source',side_effect=ValueError('Fixture uses rendered fallback')):
+            result=await self.reader.scan('https://www.jjwxc.net/onebook.php?novelid=42')
+        self.assertEqual([chapter['id'] for chapter in result['chapters']],['1'])
+        self.assertEqual(await self.page.locator('a').inner_text(),'第一章')
+
     async def test_actual_api_parser_uses_private_host_token_and_returns_text(self):
         secret='42_'+'x'*20
         async def api(url,**kwargs):

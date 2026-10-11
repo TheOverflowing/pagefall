@@ -3,6 +3,7 @@ import SwiftUI
 struct LibraryFiltersView: View {
     let index: LibraryFilterIndex
     let query: String
+    let folderID: String?
     let classificationLoading: Bool
     let classificationCount: Int
     let basicClassificationCount: Int
@@ -14,9 +15,10 @@ struct LibraryFiltersView: View {
     @State private var expandedTags = false
     @State private var expandedYears = false
 
-    init(index: LibraryFilterIndex, query: String, initial: LibraryFilterSelection, classificationLoading: Bool, classificationCount: Int, basicClassificationCount: Int, apply: @escaping (LibraryFilterSelection) -> Void) {
+    init(index: LibraryFilterIndex, query: String, initial: LibraryFilterSelection, classificationLoading: Bool, classificationCount: Int, basicClassificationCount: Int, folderID: String? = nil, apply: @escaping (LibraryFilterSelection) -> Void) {
         self.index = index
         self.query = query
+        self.folderID = folderID
         self.classificationLoading = classificationLoading
         self.classificationCount = classificationCount
         self.basicClassificationCount = basicClassificationCount
@@ -24,7 +26,7 @@ struct LibraryFiltersView: View {
         _selection = State(initialValue: initial)
     }
 
-    private var matchingCount: Int { index.matchingBooks(selection, query: query).count }
+    private var matchingCount: Int { index.matchingBooks(selection, query: query, folderID: folderID).count }
     private var tags: [(name: String, count: Int)] {
         let query = tagSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         return index.tags.filter { query.isEmpty || $0.name.localizedCaseInsensitiveContains(query) }

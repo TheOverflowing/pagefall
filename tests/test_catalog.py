@@ -16,6 +16,7 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
   self.reader=SimpleNamespace(scan=AsyncMock(return_value=copy.deepcopy(BOOK)),page=SimpleNamespace(evaluate=AsyncMock(return_value={'description':'Fixture synopsis'})),close=AsyncMock(),capture=AsyncMock(return_value={'text':'A self-authored chapter.','method':'jjwxc_api','incomplete':False}))
   self.patcher=patch.object(module,'Reader',return_value=self.reader);self.patcher.start();self.addCleanup(self.patcher.stop)
   self.extra=patch.object(module,'details_app_metadata',return_value={});self.extra.start();self.addCleanup(self.extra.stop)
+  self.addAsyncCleanup(self.catalog.close)
  async def test_details_are_cached_without_creating_a_download(self):
   value=await self.catalog.fetch(BOOK['url']);self.assertEqual(value['metadata']['description'],'Fixture synopsis')
   await self.catalog.fetch(BOOK['url']);self.reader.scan.assert_awaited_once()
@@ -75,7 +76,35 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
  async def test_reading_fetches_only_requested_chapter_and_reuses_cache(self):
   value=await self.catalog.read(BOOK,'1');self.assertEqual(value['text'],'A self-authored chapter.')
   await self.catalog.read(BOOK,'1');self.reader.capture.assert_awaited_once();self.assertEqual(self.reader.capture.call_args.args[0]['id'],'1')
-  self.assertFalse((Path(self.temp.name)/'books').exists());self.reader.close.assert_awaited_with(remember=False)
+  self.assertFalse((Path(self.temp.name)/'books').exists());self.reader.close.assert_not_awaited()
+ async def test_consecutive_remote_reads_reuse_reader_and_cleanup_on_close(self):
+  book={**BOOK,'chapters':BOOK['chapters']+[{**BOOK['chapters'][0],'id':'2','url':BOOK['chapters'][0]['url'].replace('chapterid=1','chapterid=2')}]}
+  await self.catalog.read(book,'1');await self.catalog.read(book,'2')
+  module.Reader.assert_called_once();self.assertEqual(self.reader.capture.await_count,2)
+  profile=module.Reader.call_args.args[0]
+  self.assertTrue(profile.parent.exists())
+  self.reader.close.assert_not_awaited()
+  await self.catalog.close()
+  self.reader.close.assert_awaited_once_with(remember=False)
+  self.assertFalse(profile.parent.exists())
+  await self.catalog.close()
+  self.reader.close.assert_awaited_once()
+ async def test_cached_read_does_not_wait_for_background_network_reader(self):
+  saved=await self.catalog.read(BOOK,'1')
+  async with self.catalog.lock:
+   result=await asyncio.wait_for(self.catalog.read(BOOK,'1'),.2)
+  self.assertEqual(result,saved);self.reader.capture.assert_awaited_once()
+ async def test_concurrent_uncached_read_is_serial_and_captures_once(self):
+  started=asyncio.Event();release=asyncio.Event()
+  async def capture(*_args,**_kwargs):
+   started.set();await release.wait();return {'text':'A self-authored chapter.','method':'jjwxc_api','incomplete':False}
+  self.reader.capture.side_effect=capture
+  first=asyncio.create_task(self.catalog.read(BOOK,'1'))
+  await started.wait()
+  second=asyncio.create_task(self.catalog.read(BOOK,'1'))
+  release.set()
+  results=await asyncio.gather(first,second)
+  self.assertEqual(results[0],results[1]);self.reader.capture.assert_awaited_once();module.Reader.assert_called_once()
  async def test_unavailable_and_incomplete_chapters_are_not_cached(self):
   with self.assertRaises(ValueError):await self.catalog.read(BOOK,'unknown')
   self.reader.capture.return_value={'text':'partial','incomplete':True}

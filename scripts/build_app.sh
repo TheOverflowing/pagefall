@@ -49,7 +49,8 @@ echo "正在构建拾页原生界面…"
   -target "$novelist_arch-apple-macosx14.0" \
   -module-cache-path "$novelist_build/swift-module-cache" \
   -framework SwiftUI -framework AppKit \
-  "$novelist_root/native/App.swift" "$novelist_root/native/LibraryView.swift" "$novelist_root/native/Localization.swift" "$novelist_root/native/TranslationViews.swift" "$novelist_root/native/BookViews.swift" "$novelist_root/native/LibraryFiltering.swift" "$novelist_root/native/LibraryFiltersView.swift" "$novelist_root/native/ChapterVersionsView.swift" "$novelist_root/native/UpdateMonitorView.swift" \
+  "$novelist_root/native/App.swift" "$novelist_root/native/LibraryView.swift" "$novelist_root/native/Localization.swift" "$novelist_root/native/TranslationViews.swift" "$novelist_root/native/BookViews.swift" "$novelist_root/native/LibraryFiltering.swift" "$novelist_root/native/LibraryFiltersView.swift" "$novelist_root/native/ChapterVersionsView.swift" "$novelist_root/native/UpdateMonitorView.swift" "$novelist_root/native/DownloadsView.swift" "$novelist_root/native/BookVersionsView.swift" "$novelist_root/native/BookExportView.swift" \
+  "$novelist_root/native/LibraryOrganization.swift" "$novelist_root/native/ShelfViews.swift" \
   -o "$novelist_build/NovelistApp"
 
 mkdir -p "$novelist_app/Contents/MacOS" "$novelist_app/Contents/Resources"

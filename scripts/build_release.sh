@@ -24,6 +24,7 @@ for novelist_helper in vision-ocr session-store api-key-store; do
   cp "$novelist_stage/helpers/$novelist_helper" "$novelist_resources/.build/$novelist_helper"
 done
 cp engine/dist/novelist-{rules,jinjiang}.js "$novelist_resources/engine/dist/"
+cp engine/dist/novelist-jinjiang-api.cjs "$novelist_resources/engine/dist/"
 cp engine/rules-manifest.json "$novelist_resources/engine/"
 ditto chrome-extension "$novelist_resources/chrome-extension"
 # Playwright's executable layout is versioned; include headed Chromium for login

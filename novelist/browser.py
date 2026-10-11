@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlparse
 
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeoutError
 from PIL import Image
-from .library import FAVORITES_URL, PROFILE_URL, PROFILE_NICKNAME_SCRIPT, BOOKSHELF_SCRIPT, BOOKSHELF_META_SCRIPT, BOOKSHELF_PAGES_SCRIPT, BOOKSHELF_READY_SCRIPT, BOOKSHELF_NICKNAME_SCRIPT, normalize_favorites_url
+from .library import FAVORITES_URL, PROFILE_URL, PROFILE_NICKNAME_SCRIPT, BOOKSHELF_SCRIPT, BOOKSHELF_META_SCRIPT, BOOKSHELF_PAGES_SCRIPT, BOOKSHELF_READY_SCRIPT, BOOKSHELF_NICKNAME_SCRIPT, BOOKSHELF_FOLDERS_SCRIPT, normalize_favorites_url
 from .session import load_cookies_sync, save_cookies_sync, normalize_cookies, connection_nonce
 from . import platforms
 
@@ -283,7 +283,7 @@ class Reader:
             await self.ensure()
             page = await self.context.new_page()
             page.set_default_timeout(15000)
-            books, visited, pending = {}, set(), [FAVORITES_URL]
+            books, folders, visited, pending = {}, {}, set(), [FAVORITES_URL]
             expected = None
             nickname = ""
             partial = False
@@ -319,7 +319,14 @@ class Reader:
                     except PlaywrightTimeoutError:
                         partial = True
                     for book in await page.evaluate(BOOKSHELF_SCRIPT):
-                        books[book["id"]] = book
+                        previous=books.get(book['id'],{})
+                        memberships=list(dict.fromkeys(previous.get('source_folder_ids',[])+book.get('source_folder_ids',[])))
+                        updated=max(previous.get('updated_at',''),book.get('updated_at',''))
+                        books[book['id']]={**previous,**book}
+                        if memberships:books[book['id']]['source_folder_ids']=memberships
+                        if updated:books[book['id']]['updated_at']=updated
+                    for folder in await page.evaluate(BOOKSHELF_FOLDERS_SCRIPT):
+                        folders[folder['id']]=folder
                     final_meta = await page.evaluate(BOOKSHELF_META_SCRIPT)
                     partial = partial or bool(final_meta["collapsed_controls"] or final_meta["loading_controls"])
                     for target in await page.evaluate(BOOKSHELF_PAGES_SCRIPT):
@@ -340,13 +347,28 @@ class Reader:
                 await self._remember_session()
                 complete = not partial and not pending and expected is not None and len(books) == expected
                 message = f"已同步 {len(books)} 本收藏。" if complete else f"已同步 {len(books)} 本；部分收藏尚未加载完成。"
-                return {"books": list(books.values()), "expected_count": expected, "complete": complete, "message": message, "account": {"state": "connected", "nickname": nickname, "verified_at": datetime.now(timezone.utc).isoformat()}}
+                return {"books": list(books.values()), "folders":list(folders.values()), "expected_count": expected, "complete": complete, "message": message, "account": {"state": "connected", "nickname": nickname, "verified_at": datetime.now(timezone.utc).isoformat()}}
             finally:
                 await page.close()
 
     async def scan(self, url):
         url = normalize_url(url)
         spec = platforms.platform_for(url)
+        if spec.id == 'jjwxc':
+            from .catalog import read_public_source, parse_web_metadata
+            from .chapter_catalog import parse_directory
+            try:
+                raw=await asyncio.to_thread(read_public_source,url)
+                result=parse_directory(raw,book_id(url))
+                result['metadata']=parse_web_metadata(raw)
+                for field in ('title','author'):
+                    value=result['metadata'].pop(field,'')
+                    result[field]=result.get(field) or value
+                self._engine_book_url=None
+                return result
+            except (ValueError,OSError):
+                # Keep the existing rendered parser for a changed public page.
+                pass
         await self.goto(url)
         self._engine_book_url = None
         if spec.adapter_kind == "upstream":
@@ -373,6 +395,24 @@ class Reader:
         result.update(id=book_id(url), url=url, platform="jjwxc", platform_name="晋江文学城")
         return result
 
+    async def _prepare_jinjiang(self, chapter):
+        await self.ensure()
+        if urlparse(self.page.url).hostname in ALLOWED_HOSTS:
+            return
+        url=normalize_url(chapter['url'])
+
+        async def bootstrap(route):
+            await route.fulfill(status=200,content_type='text/html',body='<!doctype html><html><head><meta charset="utf-8"></head><body></body></html>')
+
+        # The upstream parser needs a Jinjiang origin for its scoped bridge and
+        # font cache, but fetches chapter content itself. A local document avoids
+        # loading the whole book and waiting for its images before that request.
+        await self.page.route(url,bootstrap,times=1)
+        try:
+            await self.page.goto(url,wait_until='domcontentloaded',timeout=15000)
+        finally:
+            await self.page.unroute(url,bootstrap)
+
     async def capture(self, chapter, folder: Path, mode="auto"):
         spec = platforms.platform_for(chapter.get("book_url") or chapter["url"])
         if spec.adapter_kind == "upstream":
@@ -383,11 +423,12 @@ class Reader:
                 await self.scan(chapter["book_url"])
             return await engine_read(self.page, chapter)
         if spec.id == 'jjwxc' and mode == 'auto':
-            await self.ensure()
-            if urlparse(self.page.url).hostname not in ALLOWED_HOSTS:
-                await self.goto(normalize_url(chapter['url']))
-            from .jinjiang import read
-            result = await read(self, chapter)
+            from .jinjiang import read, read_api
+            result = await read_api(chapter)
+            if result is not None:
+                return result
+            await self._prepare_jinjiang(chapter)
+            result = await read(self, chapter, allow_token=False)
             if result is not None:
                 return result
         await self.goto(chapter["url"])
