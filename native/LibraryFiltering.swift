@@ -1,5 +1,56 @@
 import Foundation
 
+struct AccountInfo: Decodable, Equatable {
+    var state: String
+    var nickname: String?
+    var verified_at: String?
+    var message: String?
+}
+struct LibraryState: Decodable, Equatable {
+    var books: [LibraryBook]
+    var account: AccountInfo
+    var expected_count: Int?
+    var complete: Bool?
+    var syncing: Bool?
+    var message: String?
+    var classification_loading: Bool?
+    var classification_count: Int?
+    var classification_basic_count: Int?
+    static let empty = LibraryState(books: [], account: AccountInfo(state: "unknown"))
+
+    static func cached(in directory: URL) throws -> LibraryState {
+        let decoder = JSONDecoder()
+        var snapshot = try decoder.decode(Self.self, from: Data(contentsOf: directory.appendingPathComponent("library.json")))
+        let tags = (try? decoder.decode([String: [String]].self, from: Data(contentsOf: directory.appendingPathComponent("library-tags.json")))) ?? [:]
+        let classifications = (try? decoder.decode([String: CachedClassification].self, from: Data(contentsOf: directory.appendingPathComponent("library-classifications.json")))) ?? [:]
+        snapshot.books = snapshot.books.map { source in
+            var book = source
+            book.tags = tags[book.id] ?? book.tags
+            book.classification = classifications[book.id]?.value ?? book.classification
+            return book
+        }
+        snapshot.syncing = false
+        snapshot.classification_loading = false
+        snapshot.classification_count = snapshot.books.filter { classifications[$0.id]?.complete == true }.count
+        snapshot.classification_basic_count = snapshot.books.filter { classifications[$0.id]?.basicComplete == true }.count
+        return snapshot
+    }
+
+    private struct CachedClassification: Decodable {
+        let value: BookClassification
+        let complete: Bool
+        let basicComplete: Bool
+        private enum CodingKeys: String, CodingKey { case checkedVersion = "_checked_version", basicChecked = "_basic_checked" }
+
+        init(from decoder: Decoder) throws {
+            value = try BookClassification(from: decoder)
+            let markers = try decoder.container(keyedBy: CodingKeys.self)
+            complete = try markers.decodeIfPresent(Int.self, forKey: .checkedVersion) == 2
+            basicComplete = try markers.decodeIfPresent(Bool.self, forKey: .basicChecked) == true || complete
+        }
+    }
+}
+
 struct LibraryBook: Decodable, Identifiable, Hashable {
     var id: String
     var title: String
@@ -152,7 +203,7 @@ enum LibraryFavoriteRange: String, CaseIterable, Identifiable {
     }
 }
 
-struct LibraryFilterSelection: Equatable {
+struct LibraryFilterSelection: Equatable, Codable {
     var facets: [LibraryFacet: Set<String>] = [:]
     var wordRanges: Set<LibraryWordRange> = []
     var publicationPeriods: Set<LibraryPublicationPeriod> = []
@@ -208,6 +259,49 @@ struct LibraryFilterSelection: Equatable {
             return matchAllTags ? tags.isSubset(of: available) : !tags.isDisjoint(with: available)
         }
         return true
+    }
+}
+
+extension LibraryFilterSelection {
+    private static let defaultsKey = "library.appliedFilters"
+    private enum CodingKeys: String, CodingKey {
+        case facets, wordRanges, publicationPeriods, publicationYears, favoriteRanges, tags, matchAllTags
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let storedFacets = try values.decodeIfPresent([String: Set<String>].self, forKey: .facets) ?? [:]
+        facets = Dictionary(uniqueKeysWithValues: storedFacets.compactMap { key, choices in
+            LibraryFacet(rawValue: key).map { ($0, choices) }
+        })
+        wordRanges = Set((try values.decodeIfPresent([String].self, forKey: .wordRanges) ?? []).compactMap(LibraryWordRange.init(rawValue:)))
+        publicationPeriods = Set((try values.decodeIfPresent([String].self, forKey: .publicationPeriods) ?? []).compactMap(LibraryPublicationPeriod.init(rawValue:)))
+        publicationYears = try values.decodeIfPresent(Set<Int>.self, forKey: .publicationYears) ?? []
+        favoriteRanges = Set((try values.decodeIfPresent([String].self, forKey: .favoriteRanges) ?? []).compactMap(LibraryFavoriteRange.init(rawValue:)))
+        tags = try values.decodeIfPresent(Set<String>.self, forKey: .tags) ?? []
+        matchAllTags = try values.decodeIfPresent(Bool.self, forKey: .matchAllTags) ?? true
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(Dictionary(uniqueKeysWithValues: facets.map { ($0.key.rawValue, $0.value) }), forKey: .facets)
+        try values.encode(wordRanges.map(\.rawValue), forKey: .wordRanges)
+        try values.encode(publicationPeriods.map(\.rawValue), forKey: .publicationPeriods)
+        try values.encode(publicationYears, forKey: .publicationYears)
+        try values.encode(favoriteRanges.map(\.rawValue), forKey: .favoriteRanges)
+        try values.encode(tags, forKey: .tags)
+        try values.encode(matchAllTags, forKey: .matchAllTags)
+    }
+
+    static func load(from defaults: UserDefaults = .standard) -> Self {
+        guard let data = defaults.data(forKey: defaultsKey),
+              let selection = try? JSONDecoder().decode(Self.self, from: data) else { return Self() }
+        return selection
+    }
+
+    func save(to defaults: UserDefaults = .standard) {
+        guard let data = try? JSONEncoder().encode(self) else { return }
+        defaults.set(data, forKey: Self.defaultsKey)
     }
 }
 

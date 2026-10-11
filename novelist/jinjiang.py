@@ -148,7 +148,7 @@ async def invoke(reader, method, chapter=None):
     token = ''
     try:
         try:
-            if not token_expired and await asyncio.to_thread(has_token):
+            if method == 'read' and not token_expired and await asyncio.to_thread(has_token):
                 token = await asyncio.to_thread(token_helper,'get')
         except ValueError:
             # Optional app credentials must not disable webpage parsing.

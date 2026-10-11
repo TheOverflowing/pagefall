@@ -193,7 +193,7 @@ struct TranslationSettings: Decodable {
     var has_key: Bool?
     var providers: [TranslationProvider]
 }
-struct TranslationProgress: Decodable {
+struct TranslationProgress: Decodable, Equatable {
     var book_id: String?
     var running: Bool?
     var done: Int?
@@ -203,7 +203,7 @@ struct TranslationProgress: Decodable {
     var source_language: String?
     var target_language: String?
 }
-struct BookTranslation: Decodable {
+struct BookTranslation: Decodable, Equatable {
     var status: String?
     var done: Int?
     var total: Int?
@@ -215,7 +215,7 @@ struct BookTranslation: Decodable {
     var model: String?
     var glossary_count: Int?
 }
-struct ChapterTranslation: Decodable {
+struct ChapterTranslation: Decodable, Equatable {
     var status: String?
     var text: String?
     var error: String?
@@ -236,7 +236,7 @@ struct ChapterTranslation: Decodable {
         }
     }
 }
-struct TranslationQualityIssue: Decodable {
+struct TranslationQualityIssue: Decodable, Equatable {
     var kind: String?
     var message: String?
     var source: String?

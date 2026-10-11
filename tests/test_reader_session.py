@@ -2,8 +2,10 @@
 
 import copy
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from novelist import browser
 
@@ -86,6 +88,50 @@ class SessionLifecycleTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(browser, "save_cookies_sync") as save:
             await reader._remember_session()
         self.assertEqual(save.call_args.args[0], [cookie("old-account"), backend_cookie])
+
+    async def test_public_reader_never_loads_or_saves_account_session(self):
+        with tempfile.TemporaryDirectory() as directory:
+            reader = browser.Reader(Path(directory), hydrate_session=False)
+            page = FakePage()
+            page.set_default_timeout = Mock()
+            context = FakeContext([cookie("public-visit")])
+            context.pages = [page]
+            pw = SimpleNamespace(
+                chromium=SimpleNamespace(launch_persistent_context=AsyncMock(return_value=context)),
+                stop=AsyncMock(),
+            )
+            with patch.object(browser, "async_playwright", return_value=SimpleNamespace(start=AsyncMock(return_value=pw))), \
+                 patch.object(browser, "connection_nonce") as nonce, \
+                 patch.object(browser, "load_cookies_sync") as load, \
+                 patch.object(browser, "save_cookies_sync") as save:
+                await reader.ensure()
+                await reader.ensure()
+                await reader._hydrate_session()
+                await reader._remember_session()
+                await reader._switch_mode(False)
+                await reader.close()
+            nonce.assert_not_called()
+            load.assert_not_called()
+            save.assert_not_called()
+            self.assertTrue(context.closed)
+
+    async def test_public_navigation_skips_render_wait_but_checks_destination(self):
+        url = "https://www.jjwxc.net/onebook.php?novelid=42"
+        for hydrate in (False, True):
+            with self.subTest(hydrate=hydrate):
+                reader = browser.Reader(Path("unused-fixture-profile"), hydrate_session=hydrate)
+                reader.ensure = AsyncMock()
+                reader.page = SimpleNamespace(
+                    url=url, goto=AsyncMock(return_value=SimpleNamespace(status=200)),
+                    wait_for_timeout=AsyncMock(), evaluate=AsyncMock(),
+                )
+                await reader.goto(url)
+                reader.page.goto.assert_awaited_once_with(url, wait_until="domcontentloaded", timeout=45000)
+                self.assertEqual(reader.page.wait_for_timeout.await_count, int(hydrate))
+                self.assertEqual(reader.page.evaluate.await_count, int(hydrate))
+                reader.page.url = "https://unrelated.invalid/"
+                with self.assertRaises(browser.CaptureError):
+                    await reader.goto(url)
 
 
 if __name__ == "__main__":

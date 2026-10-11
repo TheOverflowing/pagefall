@@ -90,6 +90,7 @@ class ReaderScriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["chapters"][1]["title"], "第二章 纸船")
         self.assertTrue(result["chapters"][2]["vip"])
         self.assertFalse(result["chapters"][0]["vip"])
+        self.assertEqual([c["source_updated_at"] for c in result["chapters"]], ["2026-10-06 08:00:00", "2026-10-07 08:00:00", "2026-10-08 08:00:00"])
 
     async def test_current_jinjiang_toc_uses_semantic_counts_vip_rel_and_locked_rows(self):
         # Original labels reproduce the public page structure, not novel content.
@@ -135,8 +136,23 @@ class ReaderScriptTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(chapters[2]["locked"])
         self.assertIn("[锁]", chapters[2]["title"])
         self.assertTrue(chapters[3]["vip"])
+        self.assertEqual([c["source_updated_at"] for c in chapters], ["2026-10-07 09:00:00", "2026-10-08 09:00:00", "2026-10-08 10:00:00", "2026-10-08 11:00:00"])
         self.assertEqual(chapters[3]["state"], "pending")
         self.assertTrue(all("buynovel.php" not in c["url"] for c in chapters))
+
+    async def test_chapter_update_uses_visible_last_column_not_publication_or_book_dates(self):
+        await self.page.set_content('''<meta itemprop="dateModified" content="2026-10-09 12:00:00">
+          <table id="oneboolt"><tbody>
+            <tr itemprop="chapter newestChapter"><td>1</td><td><a href="onebook.php?novelid=9669851&chapterid=1">One</a></td>
+              <td>2025-01-01 00:00:00 is mentioned in this chapter.</td><td itemprop="wordCount">2000</td>
+              <td title="章节存稿时间：2026-01-01 00:00:00 章节首发时间：2026-09-12 00:00:00"><span>2026-09-12 01:42:53</span><span> *最新更新</span></td></tr>
+            <tr itemprop="chapter"><td>2</td><td><a href="onebook.php?novelid=9669851&chapterid=2">Two</a></td>
+              <td>2026-01-01 00:00:00</td><td itemprop="wordCount">2000</td><td title="章节首发时间：2026-09-12 00:00:00">未知</td></tr>
+            <tr itemprop="chapter"><td>3</td><td><a href="onebook.php?novelid=9669851&chapterid=3">Three</a></td>
+              <td>Summary</td><td itemprop="wordCount">2000</td><td>2026-02-30 12:00:00</td></tr>
+          </tbody></table>''')
+        result = await self.page.evaluate(TOC_SCRIPT)
+        self.assertEqual([c['source_updated_at'] for c in result['chapters']], ['2026-09-12 01:42:53', '', ''])
 
     async def test_plain_text_preserves_lines_and_excludes_hidden_or_unrelated_nodes(self):
         await self.page.set_content("""

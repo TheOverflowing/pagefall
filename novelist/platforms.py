@@ -86,6 +86,9 @@ def platform_for(value):
     if isinstance(value, str) and re.fullmatch(r"\d{1,12}", value.strip()):
         return _NATIVE[0]
     parsed = _parsed_url(value)
+    for spec in _NATIVE:
+        if parsed.hostname in spec.book_hosts or parsed.hostname in spec.reader_hosts:
+            return spec
     for spec in platforms():
         if parsed.hostname in spec.book_hosts or parsed.hostname in spec.reader_hosts:
             return spec

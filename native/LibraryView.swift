@@ -7,14 +7,21 @@ struct LibraryRootView: View {
     private enum Page: String, CaseIterable { case library = "我的书架", downloads = "下载", translation = "翻译", account = "晋江账号" }
     @State private var page: Page? = .library
     @State private var search = ""
-    @State private var filters = LibraryFilterSelection()
+    @State private var filters = LibraryFilterSelection.load()
     @State private var showingFilters = false
     @State private var adding = false
     @State private var chromeSetup = false
     @State private var newURL = ""
     @State private var showingPlatforms = false
+    @State private var showingUpdates = false
     @State private var platformSearch = ""
     @State private var chapterSelection: String?
+    private struct HistorySelection: Identifiable {
+        let bookID: String
+        let chapter: Chapter
+        var id: String { bookID + "/" + chapter.id }
+    }
+    @State private var historySelection: HistorySelection?
     @State private var translationBook: Book?
     @State private var glossaryBook: Book?
     @State private var translationSettings = false
@@ -64,7 +71,7 @@ struct LibraryRootView: View {
     private func savedAll(_ book: Book) -> Bool { let value = progress(for: book); return value.total > 0 && value.done >= value.total }
     private var contentIdentity: String {
         switch page ?? .library {
-        case .library: return "library:\(model.detail?.id ?? "shelf"):\(model.loadingBook ? "loading" : "ready")"
+        case .library: return "library:\(model.detail?.id ?? (model.loadingBook ? "loading" : "shelf"))"
         case .translation: return "translation"
         case .downloads: return "downloads"
         case .account: return "account"
@@ -104,10 +111,11 @@ struct LibraryRootView: View {
                     Group {
                     switch page ?? .library {
                     case .library:
-                        if model.loadingBook {
+                        if let book = model.detail { bookDetail(book) }
+                        else if model.loadingBook {
                             VStack(spacing: 12) { ProgressView(); Text(L("正在读取小说…")).font(.subheadline).foregroundStyle(.secondary) }
                                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        } else if let book = model.detail { bookDetail(book) } else { library }
+                        } else { library }
                     case .translation: translationWorkspace
                     case .downloads: downloads
                     case .account: account
@@ -127,6 +135,7 @@ struct LibraryRootView: View {
         .sheet(isPresented: $adding) { addSheet }
         .sheet(isPresented: $chromeSetup) { chromeSheet }
         .sheet(isPresented: $showingPlatforms) { platformsSheet }
+        .sheet(isPresented: $showingUpdates) { UpdateMonitorView(model: model) }
         .sheet(isPresented: $showingFilters) {
             LibraryFiltersView(index: model.libraryFilterIndex, query: search.trimmingCharacters(in: .whitespacesAndNewlines), initial: filters,
                 classificationLoading: model.libraryState.classification_loading == true,
@@ -135,17 +144,21 @@ struct LibraryRootView: View {
         }
         .sheet(item: $model.reading) { chapter in OnlineReadingView(model: model, chapter: chapter) }
         .sheet(item: $model.editing) { chapter in ChapterView(model: model, chapter: chapter) }
+        .sheet(item: $historySelection) { selection in
+            ChapterHistoryView(model: model, bookID: selection.bookID, chapterID: selection.chapter.id, title: selection.chapter.title)
+        }
         .sheet(item: $translationBook) { book in TranslationSettingsView(model: model, book: book) }
         .sheet(item: $glossaryBook) { book in GlossaryView(model: model, book: book) }
         .sheet(isPresented: $translationSettings) { TranslationSettingsView(model: model, book: nil) }
         .sheet(isPresented: $jinjiangSettings) { JinjiangSettingsView(model: model) }
         .onChange(of: contentIdentity) { _, _ in chapterSelection = nil; detailTab = 0 }
+        .onChange(of: filters) { _, selection in selection.save() }
     }
 
     private var contentHeader: some View {
         HStack(spacing: 12) {
             if page == .library, model.detail != nil {
-                Button { model.detail = nil; chapterSelection = nil } label: { Image(systemName: "chevron.left") }
+                Button { model.closeBook(); chapterSelection = nil } label: { Image(systemName: "chevron.left") }
                     .help(L("返回书架"))
                 Text(L("小说详情")).font(.headline)
             } else {
@@ -168,11 +181,18 @@ struct LibraryRootView: View {
                     .help(L("刷新收藏")).accessibilityLabel(L("刷新收藏")).disabled(!model.connected || syncing)
                 Button { newURL = ""; adding = true } label: { Label(L("添加链接…"), systemImage: "plus") }
                     .keyboardShortcut("n", modifiers: .command)
+            } else if page == .library, let book = model.detail {
+                if model.loadingBook { ProgressView().controlSize(.small).accessibilityLabel(L("正在更新详情…")) }
+                Button { model.openBook(id: book.id, refresh: true) } label: { Image(systemName: "arrow.clockwise") }
+                    .help(L("刷新详情")).accessibilityLabel(L("刷新详情")).disabled(model.loadingBook || !model.connected)
             } else if page == .translation {
                 Button(L("AI 翻译设置…")) { translationSettings = true }.disabled(!model.connected)
             } else if page == .downloads {
                 Button(L("打开文件夹")) { model.revealExports() }
             }
+            Button { showingUpdates = true } label: {
+                Image(systemName: model.updates.changed_count > 0 ? "arrow.triangle.2.circlepath.circle.fill" : "arrow.triangle.2.circlepath.circle")
+            }.help(L("自动追更")).accessibilityLabel(L("自动追更"))
         }.padding(.horizontal, 24).frame(height: 68)
     }
 
@@ -229,14 +249,7 @@ struct LibraryRootView: View {
                 HStack(spacing: 8) { ProgressView().controlSize(.small); Text(L("正在刷新收藏…")).font(.caption).foregroundStyle(.secondary); Spacer() }
                     .padding(.horizontal, 24).padding(.top, 12)
             }
-            if let message = model.libraryState.message, !message.isEmpty, !syncing, model.libraryState.complete == false, !model.libraryState.books.isEmpty {
-                HStack(alignment: .top, spacing: 8) {
-                    Image(systemName: "info.circle").foregroundStyle(.secondary)
-                    Text(LM(message)).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
-                    Spacer(minLength: 0)
-                }.padding(.horizontal, 24).padding(.top, 12)
-            }
-            if !model.connected {
+            if !model.connected && model.libraryState.books.isEmpty {
                 VStack(spacing: 14) {
                     ProgressView().controlSize(.regular)
                     Text(L("正在打开书架")).font(.headline)
@@ -268,26 +281,13 @@ struct LibraryRootView: View {
                 ScrollView {
                     LazyVStack(spacing: 0) {
                         ForEach(visibleBooks) { book in
-                            HStack(spacing: 14) {
-                                Button { model.openBook(id: book.id) } label: { CoverImageView(source: book.cover, title: book.title) }.buttonStyle(.plain).accessibilityLabel(L("\(book.title)，查看小说详情"))
-                                Button { model.openBook(id: book.id) } label: {
-                                    HStack(spacing: 14) {
-                                        VStack(alignment: .leading, spacing: 6) {
-                                            Text(book.title).font(.system(size: 14, weight: .medium)).foregroundStyle(.primary).lineLimit(2)
-                                            Text(book.author.isEmpty ? L("作者未提供") : book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
-                                        }
-                                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
-                                }.buttonStyle(.plain).accessibilityLabel(L("\(book.title)，\(book.author.isEmpty ? L("作者未提供") : book.author)，查看小说"))
-                                if model.queued.contains(where: { $0.id == book.id }) {
-                                    Text(L("已加入队列")).font(.caption).foregroundStyle(.secondary)
-                                } else if model.downloading && model.state.book?.id == book.id {
-                                    Button(L("查看进度")) { page = .downloads }.accessibilityLabel(L("查看\(book.title)的下载进度"))
-                                } else {
-                                    Button(L("下载整本")) { model.requestDownload(url: book.url) }.disabled(!model.connected || model.sending)
-                                        .accessibilityLabel(L("下载\(book.title)"))
-                                }
-                            }.padding(.vertical, 14)
-                            Divider()
+                            LibraryBookRow(book: book, queued: model.queued.contains { $0.id == book.id },
+                                downloading: model.downloading && model.state.book?.id == book.id,
+                                canDownload: model.connected && !model.sending, language: localization.identifier,
+                                open: { model.openBook(id: book.id) },
+                                download: { model.requestDownload(url: book.url) },
+                                showDownloads: { page = .downloads })
+                                .equatable()
                         }
                     }.padding(.horizontal, 24).padding(.top, 5)
                 }
@@ -424,7 +424,10 @@ struct LibraryRootView: View {
                     if let info = book.metadata {
                         Text([info.genre, info.perspective, info.status].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " · "))
                             .font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        if let count = info.word_count, !count.isEmpty { Text(L("\(count) 字 · \(book.chapters.count) 章")).font(.caption).foregroundStyle(.secondary) }
+                        if let count = info.word_count, !count.isEmpty {
+                            Text(model.loadingBook && book.chapters.isEmpty ? L("\(count) 字") : L("\(count) 字 · \(book.chapters.count) 章"))
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
                     }
                     HStack {
                         Button(L("开始阅读")) { if let first = book.chapters.first { model.readChapter(book, first) } }
@@ -454,13 +457,13 @@ struct LibraryRootView: View {
                             if let perspective = info.perspective, !perspective.isEmpty { metadataRow(L("作品视角"), perspective) }
                             if let tags = info.tags, !tags.isEmpty { metadataRow(L("标签"), tags.joined(separator: " · ")) }
                             if !(info.characters ?? []).isEmpty { CharacterCardsView(info: info) }
-                            VStack(alignment: .leading, spacing: 10) {
+                            if info.description?.isEmpty == false || !model.loadingBook { VStack(alignment: .leading, spacing: 10) {
                                 Text(L("文案")).font(.headline)
                                 Text(info.description?.isEmpty == false ? info.description! : L("暂无文案"))
                                     .font(.body).lineSpacing(7).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
-                            }
+                            } }
                             if let theme = info.theme, !theme.isEmpty { metadataRow(L("立意"), theme) }
-                        } else { Text(L("暂无作品简介")) .foregroundStyle(.secondary) }
+                        } else if !model.loadingBook { Text(L("暂无作品简介")) .foregroundStyle(.secondary) }
                         if progress(for: book).done > 0 {
                             Divider(); proofreadingControls(book, compact: false); translationControls(book, compact: false)
                         }
@@ -487,20 +490,41 @@ struct LibraryRootView: View {
                     TableColumn(L("章")) { chapter in Text(chapter.ordinal.map(String.init) ?? String((book.chapters.firstIndex(where: { $0.id == chapter.id }) ?? 0) + 1)).foregroundStyle(.secondary) }.width(40)
                     TableColumn(L("章节与提要")) { chapter in
                         VStack(alignment: .leading, spacing: 4) {
-                            Text(chapter.title).font(.body.weight(.medium)).lineLimit(1)
+                            HStack(spacing: 6) {
+                                Text(chapter.title).font(.body.weight(.medium)).lineLimit(1)
+                                if let status = chapter.update_status {
+                                    Text(status == "new" ? L("新章") : L("有修改"))
+                                        .font(.caption2.weight(.medium)).foregroundStyle(Color.accentColor)
+                                        .padding(.horizontal, 5).padding(.vertical, 2)
+                                        .background(Color.accentColor.opacity(0.1), in: RoundedRectangle(cornerRadius: 4))
+                                }
+                            }
                             if let summary = chapter.summary, !summary.isEmpty { Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(2) }
                         }.padding(.vertical, 5)
                     }
+                    TableColumn(L("更新时间")) { chapter in
+                        let updated = chapter.source_updated_at ?? ""
+                        Text(updated.isEmpty ? "—" : updated).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                    }.width(min: 145, ideal: 155)
                     TableColumn(L("状态")) { chapter in Text(["done", "review", "reviewed"].contains(chapter.state) ? chapter.label : L("在线读取")).foregroundStyle(chapter.color) }.width(min: 100, ideal: 125)
                     TableColumn(L("译文")) { chapter in Text(chapter.translation?.label ?? "—").foregroundStyle(.secondary) }.width(100)
                 }.contextMenu(forSelectionType: String.self) { selected in
                     Button(L("阅读本章")) { if let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { model.readChapter(book, chapter) } }
                         .disabled(selected.isEmpty || model.readingChapter || isProcessing(book))
+                    Button(L("历史版本…")) { if let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { historySelection = HistorySelection(bookID: book.id, chapter: chapter) } }
+                        .disabled(selected.isEmpty)
+                    Button(L("标记更新已读")) { if let id = selected.first { model.markChapterUpdateRead(bookID: book.id, chapterID: id) } }
+                        .disabled(!book.chapters.contains { selected.contains($0.id) && $0.update_status != nil })
                 } primaryAction: { selected in
                     if !isProcessing(book), let id = selected.first, let chapter = book.chapters.first(where: { $0.id == id }) { model.readChapter(book, chapter) }
                 }
                 HStack {
+                    if let chapter = book.chapters.first(where: { $0.id == chapterSelection }), chapter.update_status != nil {
+                        Button(L("标记更新已读")) { model.markChapterUpdateRead(bookID: book.id, chapterID: chapter.id) }
+                    }
                     Spacer()
+                    Button(L("历史版本…")) { if let chapter = book.chapters.first(where: { $0.id == chapterSelection }) { historySelection = HistorySelection(bookID: book.id, chapter: chapter) } }
+                        .disabled(chapterSelection == nil)
                     Button(L("阅读本章")) { if let chapter = book.chapters.first(where: { $0.id == chapterSelection }) { model.readChapter(book, chapter) } }
                         .disabled(chapterSelection == nil || model.readingChapter || isProcessing(book))
                 }.padding(16)
@@ -798,6 +822,47 @@ struct LibraryRootView: View {
     }
 }
 
+private struct LibraryBookRow: View, Equatable {
+    let book: LibraryBook
+    let queued: Bool
+    let downloading: Bool
+    let canDownload: Bool
+    let language: String
+    let open: () -> Void
+    let download: () -> Void
+    let showDownloads: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.book.id == rhs.book.id && lhs.book.title == rhs.book.title && lhs.book.author == rhs.book.author
+            && lhs.book.url == rhs.book.url && lhs.book.cover == rhs.book.cover
+            && lhs.queued == rhs.queued && lhs.downloading == rhs.downloading
+            && lhs.canDownload == rhs.canDownload && lhs.language == rhs.language
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 14) {
+                Button(action: open) { CoverImageView(source: book.cover, title: book.title) }
+                    .buttonStyle(.plain).accessibilityLabel(L("\(book.title)，查看小说详情"))
+                Button(action: open) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(book.title).font(.system(size: 14, weight: .medium)).foregroundStyle(.primary).lineLimit(2)
+                        Text(book.author.isEmpty ? L("作者未提供") : book.author).font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
+                    }.frame(maxWidth: .infinity, alignment: .leading).contentShape(Rectangle())
+                }.buttonStyle(.plain).accessibilityLabel(L("\(book.title)，\(book.author.isEmpty ? L("作者未提供") : book.author)，查看小说"))
+                if queued {
+                    Text(L("已加入队列")).font(.caption).foregroundStyle(.secondary)
+                } else if downloading {
+                    Button(L("查看进度"), action: showDownloads).accessibilityLabel(L("查看\(book.title)的下载进度"))
+                } else {
+                    Button(L("下载整本"), action: download).disabled(!canDownload).accessibilityLabel(L("下载\(book.title)"))
+                }
+            }.padding(.vertical, 14)
+            Divider()
+        }
+    }
+}
+
 private enum CoverResult {
     case image(NSImage), missing, failed
 }
@@ -838,7 +903,7 @@ private final class CoverStore {
         }
         for attempt in 0...2 {
             if Task.isCancelled { return .failed }
-            var request = URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 18)
+            var request = URLRequest(url: url, cachePolicy: retry ? .reloadIgnoringLocalCacheData : .useProtocolCachePolicy, timeoutInterval: 18)
             request.setValue("image/*", forHTTPHeaderField: "Accept")
             do {
                 let (data, response) = try await URLSession.shared.data(for: request)

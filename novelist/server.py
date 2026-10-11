@@ -19,6 +19,8 @@ from .session import normalize_cookies, save_cookies_sync
 from .metadata import CoverCache, CoverRetryableError
 from .platforms import book_identity, platforms, platform_for
 from .translation_store import TranslationStore
+from .chapter_versions import ChapterVersions
+from .update_monitor import UpdateMonitor, text_hash
 
 DATA = ROOT / ".local"
 BOOKS = DATA / "books"
@@ -35,6 +37,19 @@ jinjiang_connection = Connection(DATA / "jinjiang-device.json")
 
 def translation_store():
     return TranslationStore(DATA / "translations")
+
+
+def chapter_versions():
+    return ChapterVersions(DATA / "chapter-versions")
+
+
+def archive_chapter(book_id, chapter, kind="existing"):
+    if chapter.get("text", "").strip() and chapter.get("state") in {"done", "review", "reviewed"} and not chapter.get("incomplete"):
+        if kind == "source":
+            chapter["text_source_updated_at"] = chapter.get("source_updated_at")
+        # A later directory refresh may change source_updated_at without reading the body.
+        snapshot = {**chapter, "source_updated_at": chapter.get("text_source_updated_at")}
+        return chapter_versions().record(book_id, snapshot, kind=kind)
 
 
 def cover_url(identifier):
@@ -57,8 +72,8 @@ def write_json(path, value):
 
 
 def public_book(book):
-    fields = {"id", "title", "author", "url", "updated_at", "toc_chapter_count", "demo", "platform", "platform_name"}
-    chapter_fields = {"id", "title", "url", "state", "characters", "method", "error", "review", "incomplete", "absent_from_toc", "vip", "locked", "expected_words", "ordinal", "proofreading", "summary"}
+    fields = {"id", "title", "author", "url", "updated_at", "toc_chapter_count", "demo", "platform", "platform_name", "details_stale"}
+    chapter_fields = {"id", "title", "url", "state", "characters", "method", "error", "review", "incomplete", "absent_from_toc", "vip", "locked", "expected_words", "ordinal", "proofreading", "summary", "source_updated_at"}
     result = {key: value for key, value in book.items() if key in fields}
     result["chapters"] = [{key: value for key, value in chapter.items() if key in chapter_fields} for chapter in book.get("chapters", [])]
     # Polling state stays compact; detailed issue/geometry evidence is fetched
@@ -68,14 +83,17 @@ def public_book(book):
             chapter["proofreading"] = {key: value for key, value in source["proofreading"].items() if key in {"version", "status", "summary", "auto_processed", "human_reviewed", "issues_count", "changes_count"}}
         else:
             chapter.pop("proofreading", None)
-    result["progress"] = {**summarize(book), "done": summarize(book)["captured"]}
+    progress = summarize(book)
+    result["progress"] = {**progress, "done": progress["captured"]}
     result["cover"] = cover_url(book.get("id"))
     cached = catalog.cached(book['id']) or {}
     result["metadata"] = book.get("metadata") or cached.get("metadata")
     result["classification"] = {**(metadata_classification(result["metadata"]) or {}), **workbench.library_classifications.get(book['id'], {})}
-    summaries = {c['id']:c.get('summary','') for c in cached.get('chapters',[])}
+    chapter_metadata = {c['id']:c for c in cached.get('chapters',[])}
     for chapter in result['chapters']:
-        if summaries.get(chapter['id']):chapter['summary']=summaries[chapter['id']]
+        metadata=chapter_metadata.get(chapter['id'],{})
+        if metadata.get('summary'):chapter['summary']=metadata['summary']
+        if 'source_updated_at' not in chapter and 'source_updated_at' in metadata:chapter['source_updated_at']=metadata['source_updated_at']
     result["proofreading"] = proofread_summary(book)
     translations = translation_store()
     index = translations.load(book["id"])
@@ -84,6 +102,8 @@ def public_book(book):
         dependencies = translations.source_dependencies(book)
         for source, chapter in zip(book.get("chapters", []), result["chapters"]):
             chapter["translation"] = translations.chapter(book, source, index=index, dependencies=dependencies)
+    if getattr(workbench, "updates", None):
+        workbench.updates.decorate(result)
     return result
 
 
@@ -120,6 +140,9 @@ def clean_library(value):
     state = account.get("state", "unknown")
     if state not in {"unknown", "connected", "expired", "error"}:
         state = "unknown"
+    message = str(value.get("message") or "")
+    if message in {"阅读窗口已关闭。重新打开拾页后可继续。", "页面加载超时，进度已保存。请检查阅读窗口和网络后继续。"}:
+        message = "收藏刷新失败，请重试。"
     books = {}
     for item in value.get("books", []) if isinstance(value.get("books"), list) else []:
         if not isinstance(item, dict):
@@ -134,10 +157,11 @@ def clean_library(value):
     if not isinstance(expected, int) or isinstance(expected, bool) or expected < 0:
         expected = None
     return {
-        "account": {"state": state, "nickname": str(account.get("nickname") or ""), "verified_at": account.get("verified_at") if isinstance(account.get("verified_at"), str) else None},
+        "account": {"state": state, "nickname": str(account.get("nickname") or ""), "verified_at": account.get("verified_at") if isinstance(account.get("verified_at"), str) else None,
+                    "message": message if state in {"error", "expired"} else None},
         "books": list(books.values()), "expected_count": expected,
-        "complete": value.get("complete") is True and state == "connected" and (expected is None or len(books) >= expected),
-        "message": str(value.get("message") or ""),
+        "complete": value.get("complete") is True and state in {"connected", "error"} and (expected is None or len(books) >= expected),
+        "message": message,
     }
 
 
@@ -148,6 +172,7 @@ class Workbench:
         self.book = None
         self.phase, self.message = "idle", "从书架选择小说，或添加作品链接。"
         self.task = None
+        self.chapter_refresh_id = None
         self.library_task = None
         self.tags_task = None
         self.account_task = None
@@ -205,10 +230,13 @@ class Workbench:
                 self.message = "已恢复上次进度，可继续处理未完成章节。"
         except (OSError, ValueError, KeyError):
             pass
+        self.monitor_operation = False
+        self.monitor_saved = {}
+        self.updates = UpdateMonitor(DATA, self, catalog, read_auto_subscriptions)
 
     @property
     def busy(self):
-        return self.task is not None and not self.task.done()
+        return self.monitor_operation or self.chapter_refresh_id is not None or (self.task is not None and not self.task.done())
 
     @property
     def account_busy(self):
@@ -217,6 +245,102 @@ class Workbench:
     @property
     def library_syncing(self):
         return (self.library_task is not None and not self.library_task.done()) or self.account_busy
+
+    def monitor_busy(self):
+        return self.closing or self.busy or self.account_busy or self.account_waiting or self.library_syncing or self.proofreading["running"] or self.translation["running"]
+
+    async def monitor_subscriptions(self, operation):
+        self.monitor_operation = True
+        try:
+            return await operation(self.reader)
+        finally:
+            self.monitor_operation = False
+            self.kick_queue()
+
+    def monitor_books(self):
+        self.monitor_saved = {}
+        entries = {}
+        for path in BOOKS.glob("*/book.json"):
+            try:
+                book = self.get_book(path.parent.name)
+                if book.get("url") and any(readable_chapter(chapter) for chapter in book.get("chapters", [])):
+                    entries[book["id"]] = book
+                    self.monitor_saved[book["id"]] = book
+            except (HTTPException, KeyError, TypeError):
+                continue
+        for folder in (DATA / "reading").glob("*"):
+            if folder.is_dir() and folder.name not in entries and any(folder.glob("*.json")):
+                cached = catalog.cached(folder.name)
+                if cached and cached.get("url"):
+                    entries[folder.name] = cached
+        return list(entries.values())
+
+    def monitor_chapters(self, identifier):
+        book = self.monitor_saved.get(identifier)
+        saved = {chapter["id"] for chapter in (book or {}).get("chapters", []) if readable_chapter(chapter)}
+        return saved | {path.stem for path in (DATA / "reading" / safe_id(identifier)).glob("*.json")}
+
+    def monitor_snapshot(self, identifier, chapter_id):
+        reading = catalog.cached_read(identifier, chapter_id)
+        book = self.monitor_saved.get(identifier)
+        saved = next((chapter for chapter in (book or {}).get("chapters", []) if chapter["id"] == chapter_id and readable_chapter(chapter)), None)
+        # A later full download can be newer than the online-reading copy.
+        saved_time = (saved or {}).get("text_source_updated_at")
+        reading_time = (reading or {}).get("source_updated_at")
+        if saved and saved_time and (not reading_time or saved_time > reading_time):
+            return saved
+        return reading or saved
+
+    async def refresh_saved_chapter(self, source, chapter_id, previous_source_hash=None, save_new_book=False):
+        identifier = safe_id(source["id"])
+        try:
+            saved = self.get_book(identifier)
+        except HTTPException as error:
+            if error.status_code != 404:
+                raise
+            saved = None
+        current = next((chapter for chapter in (saved or {}).get("chapters", []) if chapter["id"] == chapter_id), None)
+        if current:
+            archive_chapter(identifier, current)
+        self.chapter_refresh_id = identifier
+        try:
+            options = {"previous_source_hash": previous_source_hash} if previous_source_hash is not None else {}
+            result = await catalog.read(source, chapter_id, refresh=True, **options)
+            if saved is None and save_new_book:
+                saved = {**source, "author": source.get("author") or "", "chapters": []}
+                for source_chapter in source["chapters"]:
+                    item = {key: value for key, value in source_chapter.items() if key not in {"text", "raw_text", "proofreading", "proofread_undo", "screenshots", "lines", "characters"}}
+                    item["state"] = "blocked" if item.get("locked") else "pending"
+                    saved["chapters"].append(item)
+                current = next(chapter for chapter in saved["chapters"] if chapter["id"] == chapter_id)
+                self.monitor_saved[identifier] = saved
+            if saved:
+                if previous_source_hash is None and current and readable_chapter(current) and current.get("text") == result["text"]:
+                    return result
+                unchanged_source = previous_source_hash is not None and text_hash(result["text"]) == previous_source_hash
+                if current is None:
+                    current = dict(next(chapter for chapter in source["chapters"] if chapter["id"] == chapter_id))
+                    saved["chapters"].append(current)
+                if not unchanged_source or not readable_chapter(current):
+                    changed = current.get("text") != result["text"]
+                    if changed or not readable_chapter(current):
+                        needs_review = bool(result.get("review")) or result.get("method") == "ocr"
+                        for key in ("proofreading", "proofread_undo", "lines", "screenshots"):
+                            current.pop(key, None)
+                        current.update({key: value for key, value in result.items() if key in {"title", "url", "text", "method", "source_updated_at"}})
+                        current.update(raw_text=result["text"], text_source_updated_at=result.get("source_updated_at"), state="review" if needs_review else "done", review=needs_review, incomplete=False, error="", characters=len(re.sub(r"\s", "", result["text"])))
+                        saved.pop("proofread_completed_at", None)
+                current["source_updated_at"] = result.get("source_updated_at")
+                source_chapter = next(chapter for chapter in source["chapters"] if chapter["id"] == chapter_id)
+                for key in ("locked", "vip", "expected_words", "summary", "ordinal", "url", "title"):
+                    if key in source_chapter:
+                        current[key] = source_chapter[key]
+                saved["toc_chapter_count"] = len(source["chapters"])
+                self.save_book(saved)
+            return result
+        finally:
+            self.chapter_refresh_id = None
+            self.kick_queue()
 
     def save_book(self, book, current=False):
         identifier = safe_id(book["id"])
@@ -267,9 +391,8 @@ class Workbench:
         progress = {"done": 0, "total": 0}
         if self.book:
             public = public_book(self.book)
-            progress = summarize(self.book)
-            progress["done"] = progress["captured"]
-        return {"busy": self.busy or self.account_busy, "browser_open": self.reader.opened, "phase": self.phase, "message": self.message, "book": public, "progress": progress, "account": self.library_cache["account"], "account_waiting": self.account_waiting, "library_syncing": self.library_syncing, "background": bool(getattr(self.reader, "headless", False)), "downloads": self.downloads(), "queue": self.queue, "queue_paused": self.queue_paused, "proofreading": self.proofreading, "translation": self.translation}
+            progress = public["progress"]
+        return {"busy": self.busy or self.account_busy, "browser_open": self.reader.opened, "phase": self.phase, "message": self.message, "book": public, "progress": progress, "account": self.library_cache["account"], "account_waiting": self.account_waiting, "library_syncing": self.library_syncing, "background": bool(getattr(self.reader, "headless", False)), "downloads": self.downloads(), "queue": self.queue, "queue_paused": self.queue_paused, "proofreading": self.proofreading, "translation": self.translation, "updates": self.updates.status()}
 
     def launch(self, operation, phase, queue_entry=None):
         if self.busy or self.account_busy or self.account_waiting:
@@ -413,6 +536,8 @@ class Workbench:
         pending = []
         for book in self.library_cache["books"]:
             identifier = book["id"]
+            if identifier in self.classification_checked and identifier in self.library_tags:
+                continue
             metadata = ((catalog.cached(identifier) or {}).get("metadata") or {})
             classification = metadata_classification(metadata)
             if classification is not None and (identifier not in self.library_classifications or metadata.get("classification_version") == CLASSIFICATION_VERSION):
@@ -508,7 +633,8 @@ class Workbench:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self.library_cache = {**self.library_cache, "account": {**self.library_cache["account"], "state": "error"}, "complete": False, "message": human_error(exc)}
+            message = human_error(exc) if isinstance(exc, CaptureError) else "收藏刷新失败，请重试。"
+            self.library_cache = {**self.library_cache, "account": {**self.library_cache["account"], "state": "error", "message": message}, "message": message}
         write_json(DATA / "library.json", self.library_cache)
         self.launch_tag_lookup()
         return self.library_state()
@@ -562,14 +688,14 @@ class Workbench:
                 if cancel:
                     await self.reader.background()
                     self.account_waiting = False
-                    self.message = "已关闭登录窗口，可以继续使用拾页。"
+                    self.message = ""
                 elif finish:
                     await self.refresh_library()
                     self.message = self.library_cache["message"]
                     if self.library_cache["account"]["state"] == "connected":
                         await self.reader.background()
                         self.account_waiting = False
-                        self.message = "账号已连接，后续采集将在后台进行。"
+                        self.message = "账号已连接"
                 else:
                     self.account_waiting = True
                     self.replace_library_on_sync = True
@@ -608,7 +734,7 @@ class Workbench:
             if chapter["id"] in previous:
                 old = previous[chapter["id"]]
                 access_state, access_error = chapter.get("state"), chapter.get("error", "")
-                chapter.update({k: v for k, v in old.items() if k not in {"title", "url", "id", "expected_words", "vip", "locked", "absent_from_toc", "order", "ordinal", "book_url", "platform", "rule_id", "paid"}})
+                chapter.update({k: v for k, v in old.items() if k not in {"title", "url", "id", "expected_words", "vip", "locked", "absent_from_toc", "order", "ordinal", "book_url", "platform", "rule_id", "paid", "source_updated_at"}})
                 if access_state == "blocked" and not (old.get("text", "").strip() and old.get("state") in {"done", "review", "reviewed"}):
                     chapter["state"], chapter["error"] = access_state, access_error
                 if chapter["state"] == "capturing":
@@ -629,7 +755,7 @@ class Workbench:
             chapter["ordinal"] = ordinal
         self.book = book
         self.save()
-        self.phase, self.message = "ready", f"已读取 {len(book['chapters'])} 章。确认目录后，可下载整本小说。"
+        self.phase, self.message = "ready", f"已读取 {len(book['chapters'])} 章"
 
     async def capture(self, mode, delay):
         interrupted = False
@@ -652,7 +778,9 @@ class Workbench:
                 chapter.update(result)
                 chapter["characters"] = len(re.sub(r"\s", "", chapter["text"]))
                 chapter["state"] = "failed" if chapter.get("incomplete") else "review" if chapter["review"] else "done"
-                apply_proofreading(chapter)
+                archive_chapter(self.book["id"], chapter, "source")
+                if apply_proofreading(chapter):
+                    archive_chapter(self.book["id"], chapter, "proofread")
             except CaptureError as exc:
                 chapter["state"], chapter["error"] = exc.kind, str(exc)
                 if exc.pause:
@@ -674,7 +802,7 @@ class Workbench:
         result = summarize(self.book)
         self.phase = "paused" if interrupted or self.pause else "finished"
         if self.pause:
-            self.message = "已暂停并保存进度。再次开始会跳过已经保存的章节。"
+            self.message = "已暂停并保存进度。"
         elif not interrupted:
             self.message = f"本轮处理结束：已保存 {result['captured']}/{result['total']} 章，缺失 {result['missing']} 章，待校对 {result['review']} 章。"
         self.save()
@@ -691,7 +819,9 @@ class Workbench:
             for chapter in eligible:
                 if self.pause:
                     break
-                apply_proofreading(chapter)
+                archive_chapter(book["id"], chapter)
+                if apply_proofreading(chapter):
+                    archive_chapter(book["id"], chapter, "proofread")
                 report = chapter.get("proofreading") or {}
                 self.proofreading["done"] += 1
                 self.proofreading["changed"] += bool(report.get("changes_count"))
@@ -718,10 +848,15 @@ def human_error(exc):
     if "ERR_CERT" in text:
         return "浏览器未能验证网站证书，请检查网络或代理证书后重试。"
     if "Timeout" in type(exc).__name__ or "Timeout" in text:
-        return "页面加载超时，进度已保存。请检查阅读窗口和网络后继续。"
+        return "请求超时，请稍后重试。"
     if "closed" in text.lower():
-        return "阅读窗口已关闭。重新打开拾页后可继续。"
+        return "连接已中断，请重试。"
     return "操作未完成：" + text[:300]
+
+
+async def read_auto_subscriptions(reader):
+    from .jinjiang_subscriptions import read_subscriptions
+    return await read_subscriptions(reader)
 
 
 workbench = Workbench()
@@ -731,8 +866,10 @@ workbench = Workbench()
 async def lifespan(app):
     workbench.kick_queue()
     workbench.launch_tag_lookup()
+    workbench.updates.start()
     yield
     workbench.closing = True
+    await workbench.updates.close()
     tasks = [task for task in (workbench.task, workbench.library_task, workbench.tags_task, workbench.account_task) if task and not task.done()]
     for task in tasks:
         task.cancel()
@@ -765,6 +902,34 @@ async def local_only(request: Request, call_next):
 @app.get("/api/state")
 async def state():
     return workbench.state()
+
+
+@app.get("/api/updates")
+async def updates_status():
+    return workbench.updates.status()
+
+
+@app.post("/api/updates/settings")
+async def updates_settings(request: Request):
+    data = await body(request)
+    if not isinstance(data.get("enabled"), bool):
+        raise HTTPException(400, "请求内容无效")
+    workbench.updates.configure(data["enabled"])
+    return {"ok": True, **workbench.updates.status()}
+
+
+@app.post("/api/updates/check")
+async def updates_check():
+    workbench.updates.request_check()
+    return {"ok": True, **workbench.updates.status()}
+
+
+@app.post("/api/chapter-updates/read")
+async def chapter_update_read(request: Request):
+    data = await body(request)
+    identifier, chapter_id = safe_id(data.get("book_id")), safe_id(data.get("chapter_id"))
+    workbench.updates.mark_read(identifier, chapter_id)
+    return {"ok": True}
 
 
 @app.get("/api/library")
@@ -845,7 +1010,8 @@ async def book_details(request: Request):
     except HTTPException as error:
         if error.status_code!=404:raise
         saved = None
-    entry = saved or next((b for b in workbench.library_cache['books'] if b['id']==identifier),None) or catalog.cached(identifier)
+    cached = catalog.cached(identifier)
+    entry = saved or next((b for b in workbench.library_cache['books'] if b['id']==identifier),None) or cached
     if not entry:raise HTTPException(404,'书籍不在本机书架中。')
     if not entry.get('url'):return public_book(entry)
     try:
@@ -854,13 +1020,27 @@ async def book_details(request: Request):
         raise HTTPException(400,str(error)) from None
     except Exception:
         raise HTTPException(503,'作品信息暂时无法加载，请稍后重试。') from None
-    if any(b['id']==identifier for b in workbench.library_cache['books']):
+    if remote.get('cached_at')!=(cached or {}).get('cached_at') and any(b['id']==identifier for b in workbench.library_cache['books']):
         workbench.remember_metadata(identifier,remote.get('metadata') or {})
     if saved:
-        result=public_book(saved)
-        if not result['chapters']:result['chapters']=public_book(remote)['chapters']
-        result['metadata']=remote.get('metadata')
-        return result
+        previous={chapter['id']:chapter for chapter in saved['chapters']}
+        chapters=[]
+        source_fields={'title','url','id','expected_words','vip','locked','absent_from_toc','order','ordinal','book_url','platform','rule_id','paid','summary','source_updated_at'}
+        for current in remote['chapters']:
+            old=previous.pop(current['id'],{})
+            chapter={**current,**{key:value for key,value in old.items() if key not in source_fields}}
+            if current.get('state')=='blocked' and not (old.get('text','').strip() and old.get('state') in {'done','review','reviewed'}):
+                chapter.update(state='blocked',error=current.get('error',''))
+            if chapter.get('state')=='capturing':chapter['state']='pending'
+            chapters.append(chapter)
+        for old in previous.values():
+            chapter={**old,'absent_from_toc':True,'review':True,'error':'本次目录未列出此章，已保留先前内容，请核对目录。'}
+            if old.get('text','').strip() and old.get('state') in {'done','review','reviewed'}:chapter['state']='review'
+            elif old.get('state') not in {'blocked','failed'}:chapter['state']='blocked'
+            chapters.append(chapter)
+        if remote.get('platform','jjwxc')=='jjwxc':chapters.sort(key=lambda chapter:int(chapter['id']))
+        for ordinal,chapter in enumerate(chapters,1):chapter['ordinal']=ordinal
+        return public_book({**saved,**remote,'chapters':chapters,'toc_chapter_count':len(remote['chapters'])})
     return public_book(remote)
 
 
@@ -868,11 +1048,93 @@ async def book_details(request: Request):
 async def read_online_chapter(request: Request):
     data=await body(request)
     identifier,chapter_id=safe_id(data.get('book_id')),safe_id(data.get('chapter_id'))
+    try:
+        saved = workbench.get_book(identifier)
+        chapter = chapter_by_id(chapter_id, saved)
+        if readable_chapter(chapter):
+            return await get_chapter(chapter_id, book_id=identifier)
+    except HTTPException as error:
+        if error.status_code != 404:raise
+    reading = catalog.cached_read(identifier, chapter_id)
+    if reading:
+        chapter_versions().record(identifier, reading, kind="existing")
+        return reading
     book=catalog.cached(identifier)
     if not book:raise HTTPException(404,'请先打开书籍详情。')
     try:return await catalog.read(book,chapter_id)
     except (CaptureError,ValueError) as error:raise HTTPException(400,str(error)) from None
     except Exception:raise HTTPException(503,'本章暂时无法读取，请稍后重试。') from None
+
+
+def readable_chapter(chapter):
+    return bool(chapter.get("text", "").strip()) and chapter.get("state", "done") in {"done", "review", "reviewed"} and not chapter.get("incomplete")
+
+
+def version_context(book_id, chapter_id):
+    book_id, chapter_id = safe_id(book_id), safe_id(chapter_id)
+    saved = None
+    try:
+        saved = workbench.get_book(book_id)
+    except HTTPException as error:
+        if error.status_code != 404:raise
+    cached = catalog.cached(book_id)
+    chapter = next((chapter for book in (saved, cached) if book for chapter in book.get("chapters", []) if chapter["id"] == chapter_id), None)
+    reading = catalog.cached_read(book_id, chapter_id)
+    if chapter is None and reading is None:
+        raise HTTPException(404, "章节不存在。")
+    if reading:
+        chapter_versions().record(book_id, reading, kind="existing")
+    if chapter and readable_chapter(chapter):
+        archive_chapter(book_id, chapter)
+    return saved, cached, chapter
+
+
+@app.get("/api/chapter-versions")
+async def list_chapter_versions(book_id: str, chapter_id: str):
+    version_context(book_id, chapter_id)
+    return {"versions": chapter_versions().list(book_id, chapter_id)}
+
+
+@app.get("/api/chapter-version")
+async def get_chapter_version(book_id: str, chapter_id: str, version_id: str):
+    version_context(book_id, chapter_id)
+    safe_id(version_id)
+    try:
+        return chapter_versions().get(book_id, chapter_id, version_id)
+    except ValueError:
+        raise HTTPException(404, "章节版本不存在。") from None
+
+
+@app.get("/api/chapter-diff")
+async def compare_chapter_versions(book_id: str, chapter_id: str, from_id: str, to_id: str):
+    version_context(book_id, chapter_id)
+    safe_id(from_id), safe_id(to_id)
+    try:
+        return chapter_versions().compare(book_id, chapter_id, from_id, to_id)
+    except ValueError:
+        raise HTTPException(404, "章节版本不存在。") from None
+
+
+@app.post("/api/chapter-refresh")
+async def refresh_chapter(request: Request):
+    data = await body(request)
+    identifier, chapter_id = safe_id(data.get("book_id")), safe_id(data.get("chapter_id"))
+    require_idle()
+    saved, cached, chapter = version_context(identifier, chapter_id)
+    if saved:require_book_idle(saved)
+    source = cached if cached and any(c["id"] == chapter_id for c in cached.get("chapters", [])) else saved
+    if not source or not source.get("url") or not chapter:
+        raise HTTPException(400, "本章没有可更新的来源。")
+    try:
+        result = await workbench.refresh_saved_chapter(source, chapter_id)
+        if saved and any(current["id"] == chapter_id for current in saved["chapters"]):
+            return await get_chapter(chapter_id, book_id=identifier)
+        return result
+    except HTTPException:raise
+    except (CaptureError, ValueError) as error:
+        raise HTTPException(400, str(error)) from None
+    except Exception:
+        raise HTTPException(503, "正文更新失败，请稍后重试。") from None
 
 
 @app.post('/api/translation/drafts')
@@ -926,6 +1188,8 @@ def require_idle():
 
 
 def require_book_idle(book):
+    if workbench.chapter_refresh_id == book["id"]:
+        raise HTTPException(409, "本章正在更新，请等待正文保存。")
     if workbench.translation["running"] and workbench.translation["book_id"] == book["id"]:
         raise HTTPException(409, "这本作品正在翻译，请先暂停并等待当前段落保存。")
     if workbench.proofreading["running"] and workbench.proofreading["book_id"] == book["id"]:
@@ -1098,10 +1362,12 @@ async def undo_proofread(request: Request):
     for chapter in book["chapters"]:
         if not chapter.get("proofread_undo") or not proofread_current(chapter):
             continue
+        archive_chapter(book["id"], chapter)
         snapshot = chapter.pop("proofread_undo")
         for key in snapshot["missing"]:
             chapter.pop(key, None)
         chapter.update(snapshot["values"])
+        archive_chapter(book["id"], chapter, "proofread_undo")
         restored += 1
     if not restored:
         raise HTTPException(400, "没有可撤销的自动校对结果。手动修改后的章节会保留。")
@@ -1231,7 +1497,8 @@ def chapter_by_id(chapter_id, book=None):
 async def get_chapter(id: str, book_id: str | None = None):
     book = workbench.get_book(book_id)
     chapter = chapter_by_id(id, book)
-    fields = {"id", "title", "url", "state", "text", "raw_text", "characters", "method", "error", "review", "incomplete", "absent_from_toc", "vip", "locked", "expected_words", "lines", "ordinal", "proofreading"}
+    archive_chapter(book["id"], chapter)
+    fields = {"id", "title", "url", "state", "text", "raw_text", "characters", "method", "error", "review", "incomplete", "absent_from_toc", "vip", "locked", "expected_words", "lines", "ordinal", "proofreading", "source_updated_at"}
     result = {key: value for key, value in chapter.items() if key in fields}
     result["book_id"] = book["id"]
     result["translation"] = translation_store().chapter(book, chapter, full=True)
@@ -1249,6 +1516,8 @@ async def update_chapter(request: Request):
     book = workbench.get_book(data.get("book_id"))
     require_book_idle(book)
     chapter = chapter_by_id(data.get("id"), book)
+    if "base_text" in data and data["base_text"] != chapter.get("text", ""):
+        raise HTTPException(409, "本章已更新，请重新打开后再保存。")
     text = data.get("text", "")
     if not isinstance(text, str) or not text.strip():
         raise HTTPException(400, "校对正文不能为空。")
@@ -1256,9 +1525,11 @@ async def update_chapter(request: Request):
         raise HTTPException(400, "该章节尚未采集，不能以校对操作标记完成。")
     if chapter.get("state") == "blocked":
         raise HTTPException(400, "本章当前未显示可读取正文，不能通过校对标记完成。")
+    archive_chapter(book["id"], chapter)
     chapter.update(text=text.strip(), state="reviewed", review=False, incomplete=False, error="", characters=len(re.sub(r"\s", "", text)))
     chapter.pop("proofreading", None)
     chapter.pop("proofread_undo", None)
+    archive_chapter(book["id"], chapter, "edit")
     workbench.save_book(book, current=book is workbench.book)
     return {"ok": True}
 

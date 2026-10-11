@@ -36,6 +36,14 @@ class ExportTests(unittest.TestCase):
         book["chapters"][0]["text"] = "   "
         self.assertEqual(summarize(book)["missing"], 1)
 
+    def test_coverage_ignores_whitespace_and_unexportable_characters(self):
+        for text in (None, "", " \t\n\r\u00a0\u3000", "\x00\x01\ud800\ufffe\uffff"):
+            with self.subTest(text=repr(text)):
+                self.assertEqual(summarize({"chapters": [{"state": "done", "text": text}]})["captured"], 0)
+        for text in ("\x00\u3000正文", "\ud800🙂\ufffe", "\ue000", "\ufffd", 0):
+            with self.subTest(text=repr(text)):
+                self.assertEqual(summarize({"chapters": [{"state": "done", "text": text}]})["captured"], 1)
+
     def test_text_formats_preserve_order_and_missing_markers(self):
         book = example_book()
         original = copy.deepcopy(book)

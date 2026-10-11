@@ -244,10 +244,10 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.stored_book()["chapters"][1]["state"], "pending")
 
     async def test_rescan_merges_saved_content_but_preserves_current_metadata(self):
-        self.workbench.book = book(chapter(1, "reviewed", "保留人工校对", method="ocr", raw_text="原始文本"), chapter(2, "capturing", locked=True))
+        self.workbench.book = book(chapter(1, "reviewed", "保留人工校对", method="ocr", raw_text="原始文本", source_updated_at="2026-10-01 12:00:00"), chapter(2, "capturing", locked=True, source_updated_at="2026-10-01 13:00:00"))
         self.workbench.save()
         new_url = "https://my.jjwxc.net/onebook_vip.php?novelid=42&chapterid=1"
-        latest = book(chapter(1, title="更新后的标题", url=new_url, expected_words=9000, vip=True), chapter(2, locked=False), chapter(3))
+        latest = book(chapter(1, title="更新后的标题", url=new_url, expected_words=9000, vip=True, source_updated_at="2026-10-09 12:01:02"), chapter(2, locked=False, source_updated_at=""), chapter(3))
         latest["title"] = "更新后的书名"
         self.workbench.reader.scan_result = latest
         await self.workbench.scan(latest["url"])
@@ -255,13 +255,14 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(saved["title"], "更新后的书名")
         self.assertEqual([item["id"] for item in saved["chapters"]], ["1", "2", "3"])
         first = saved["chapters"][0]
-        for field in ("title", "url", "expected_words", "vip"):
+        for field in ("title", "url", "expected_words", "vip", "source_updated_at"):
             self.assertEqual(first[field], latest["chapters"][0][field])
         self.assertEqual(first["state"], "reviewed")
         self.assertEqual(first["text"], "保留人工校对")
         self.assertEqual(first["raw_text"], "原始文本")
         self.assertEqual(saved["chapters"][1]["state"], "pending")
         self.assertFalse(saved["chapters"][1]["locked"], "Fresh directory metadata must release a previously locked chapter")
+        self.assertEqual(saved["chapters"][1]["source_updated_at"], "")
         self.assertEqual(self.workbench.phase, "ready")
 
     async def test_launch_clears_busy_after_exception_and_rejects_overlapping_work(self):
@@ -352,9 +353,17 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.workbench.library_cache["account"]["state"], "error")
         self.assertEqual(self.workbench.library_cache["account"]["nickname"], "测试读者")
         self.assertEqual(self.workbench.library_cache["books"], cached["books"])
-        self.assertFalse(self.workbench.library_cache["complete"])
+        self.assertTrue(self.workbench.library_cache["complete"])
+        self.assertEqual(self.workbench.library_cache["account"]["message"], "收藏刷新失败，请重试。")
         recovered = server.Workbench()
         self.assertEqual(recovered.library_cache, self.workbench.library_cache)
+
+    async def test_saved_connection_error_does_not_claim_a_reading_window_is_open(self):
+        recovered = server.clean_library({"account": {"state": "error"}, "books": [{"id": "42"}],
+                                          "message": "阅读窗口已关闭。重新打开拾页后可继续。"})
+        self.assertEqual(recovered["account"]["message"], "收藏刷新失败，请重试。")
+        self.assertEqual(server.human_error(RuntimeError("Target page, context or browser has been closed")), "连接已中断，请重试。")
+        self.assertEqual(server.human_error(TimeoutError("network timeout")), "请求超时，请稍后重试。")
 
     async def test_library_refresh_looks_up_tags_for_shelf_books(self):
         self.workbench.reader.library_result = {"account": {"state": "connected", "nickname": "读者"}, "books": [{"id": "987654321", "title": "收藏作品"}], "complete": True}
@@ -392,6 +401,21 @@ class WorkbenchTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(classification["orientation"], "言情")
         self.assertEqual(classification["word_count"], 10198)
         self.assertEqual(json.loads((self.data / "library-classifications.json").read_text())["42"], {**classification, "_checked_version": server.CLASSIFICATION_VERSION, "_basic_checked": True})
+
+    async def test_restart_only_reads_missing_shelf_metadata(self):
+        shelf = server.clean_library({"books": [{"id": "42"}, {"id": "43"}]})
+        server.write_json(self.data / "library.json", shelf)
+        server.write_json(self.data / "library-tags.json", {"42": ["甜文"]})
+        server.write_json(self.data / "library-classifications.json", {"42": {"orientation": "百合", "_checked_version": server.CLASSIFICATION_VERSION}})
+        restored = server.Workbench()
+        with patch.object(server.catalog, "cached", return_value=None) as details, patch.object(server, "public_app_basic_metadata", return_value={}) as basic, patch.object(server, "public_author_publications") as dates:
+            restored.launch_tag_lookup()
+            await restored.tags_task
+            details.assert_called_once_with("43")
+            basic.assert_called_once_with("43")
+            dates.assert_not_called()
+        self.assertEqual(restored.library_state()["classification_count"], 1)
+        self.assertEqual(restored.library_state()["books"][0]["classification"]["orientation"], "百合")
 
     async def test_checked_unknown_fields_are_cached_without_repeat_requests(self):
         self.workbench.library_cache = server.clean_library({"books": [{"id": "42"}]})

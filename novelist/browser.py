@@ -27,6 +27,16 @@ TOC_SCRIPT = r"""() => {
  const id = new URL(location.href).searchParams.get('novelid');
  const items = new Map();
  const rows=[...document.querySelectorAll('#oneboolt > tbody > tr[itemprop~="chapter"]')];
+ function sourceUpdatedAt(row){
+   const cell=row?.cells[row.cells.length-1];
+   const match=cell?.innerText.trim().match(/^(\d{4})-(\d{2})-(\d{2})\s+(\d{2}):(\d{2})(?::(\d{2}))?(?=\s|$)/);
+   if(!match)return '';
+   const [year,month,day,hour,minute,second]=match.slice(1).map(value=>Number(value||0));
+   const value=new Date(Date.UTC(year,month-1,day,hour,minute,second));
+   if(value.getUTCFullYear()!==year||value.getUTCMonth()!==month-1||value.getUTCDate()!==day||value.getUTCHours()!==hour||value.getUTCMinutes()!==minute||value.getUTCSeconds()!==second)return '';
+   // The visible final column is the last update; its tooltip contains first-publication and draft times.
+   return `${match[1]}-${match[2]}-${match[3]} ${match[4]}:${match[5]}:${match[6]||'00'}`;
+ }
  function readingURL(a){
    for(const value of [a.getAttribute('href'),a.getAttribute('rel')]){
      if(!value)continue;
@@ -48,7 +58,7 @@ TOC_SCRIPT = r"""() => {
   const count=cells.findIndex(x=>/^\d{4}-\d{2}-\d{2}/.test(x));
   let expected=Number(tr?.querySelector('[itemprop~="wordCount"]')?.textContent?.trim()||0);
   if(!expected && count>0 && /^\d+$/.test(cells[count-1])) expected=Number(cells[count-1]);
-  const candidate={id:cid,title,url:`https://${u.hostname}${u.pathname}?novelid=${id}&chapterid=${cid}`,expected_words:expected,vip:u.pathname.includes('_vip'),state:'pending'};
+  const candidate={id:cid,title,url:`https://${u.hostname}${u.pathname}?novelid=${id}&chapterid=${cid}`,expected_words:expected,vip:u.pathname.includes('_vip'),state:'pending',source_updated_at:sourceUpdatedAt(tr)};
   if (!items.has(cid) || tr) items.set(cid,candidate);
  }
  // Locked chapters may have no link at all. Keep them in the manifest.
@@ -56,7 +66,7 @@ TOC_SCRIPT = r"""() => {
    const cid=row.cells[0]?.innerText.trim();const cell=row.cells[1];
    if(!/^\d+$/.test(cid||'')||items.has(cid)||!cell)continue;
    const label=cell.innerText.trim();
-   items.set(cid,{id:cid,title:label||`第 ${cid} 章`,url:`https://www.jjwxc.net/onebook.php?novelid=${id}&chapterid=${cid}`,state:'blocked',locked:/\[锁\]|锁定|锁章/.test(label),expected_words:Number(row.querySelector('[itemprop~="wordCount"]')?.textContent?.trim()||0),error:'目录中的本章没有可用阅读链接。'});
+   items.set(cid,{id:cid,title:label||`第 ${cid} 章`,url:`https://www.jjwxc.net/onebook.php?novelid=${id}&chapterid=${cid}`,state:'blocked',locked:/\[锁\]|锁定|锁章/.test(label),expected_words:Number(row.querySelector('[itemprop~="wordCount"]')?.textContent?.trim()||0),source_updated_at:sourceUpdatedAt(row),error:'目录中的本章没有可用阅读链接。'});
  }
  const meta=n=>document.querySelector(`meta[property="${n}"],meta[name="${n}"]`)?.content || '';
  let title=meta('og:novel:book_name') || document.querySelector('#oneboolt .bigtext')?.textContent?.trim() || document.querySelector('[itemprop="articleSection"]')?.textContent?.trim() || document.querySelector('h1')?.innerText?.trim() || document.title;
@@ -126,8 +136,9 @@ GATE_ERRORS = {
 
 
 class Reader:
-    def __init__(self, profile: Path, headless=True):
+    def __init__(self, profile: Path, headless=True, hydrate_session=True):
         self.profile, self.headless = profile, headless
+        self.hydrate_session = hydrate_session
         self.pw = self.context = self.page = None
         self._nonce = None
         self._initializing = asyncio.Lock()
@@ -142,7 +153,7 @@ class Reader:
 
     async def ensure(self):
         if self.opened:
-            if self.context and connection_nonce() != self._nonce:
+            if self.hydrate_session and self.context and connection_nonce() != self._nonce:
                 await self._hydrate_session()
             return
         async with self._initializing:
@@ -161,6 +172,8 @@ class Reader:
             await self._hydrate_session()
 
     async def _hydrate_session(self):
+        if not self.hydrate_session:
+            return
         nonce = connection_nonce()
         cookies = await asyncio.to_thread(load_cookies_sync)
         if cookies or (nonce and nonce != self._nonce):
@@ -186,6 +199,8 @@ class Reader:
         ])
 
     async def _remember_session(self):
+        if not self.hydrate_session:
+            return
         cookies = await self._session_cookies()
         if cookies:
             await asyncio.to_thread(save_cookies_sync, cookies)
@@ -194,14 +209,14 @@ class Reader:
         # An explicit Chrome connection may have arrived since this context was
         # last used. Apply it before snapshotting, or old cookies would overwrite
         # the newly imported account in Keychain.
-        if self.context and connection_nonce() != self._nonce:
+        if self.hydrate_session and self.context and connection_nonce() != self._nonce:
             await self._hydrate_session()
         if self.headless == headless and self.opened:
             return
         cookies = []
         if self.context:
             cookies = await self._session_cookies()
-            if cookies:
+            if cookies and self.hydrate_session:
                 await asyncio.to_thread(save_cookies_sync, cookies)
         await self.close(remember=False)
         self.headless = headless
@@ -222,7 +237,7 @@ class Reader:
         if self.context:
             # Preserve session-only and refreshed cookies on normal app shutdown.
             # Never overwrite a newer, unapplied Chrome import with this context.
-            if remember and connection_nonce() == self._nonce:
+            if self.hydrate_session and remember and connection_nonce() == self._nonce:
                 try:
                     await self._remember_session()
                 except Exception:
@@ -241,9 +256,12 @@ class Reader:
         response = await self.page.goto(url, wait_until="domcontentloaded", timeout=45000)
         if response and response.status in {403, 429}:
             raise CaptureError(f"{spec.name}限制了当前访问，请稍后再试。", "blocked", True)
-        await self.page.wait_for_timeout(1800)
+        if self.hydrate_session:
+            await self.page.wait_for_timeout(1800)
         if urlparse(self.page.url).hostname not in spec.reader_hosts:
             raise CaptureError("页面跳转到了其他网站，可能需要在原平台完成验证。", "blocked", True)
+        if not self.hydrate_session:
+            return
         # Wait for glyphs and images to finish rendering, within a bounded timeout.
         try:
             await self.page.evaluate("() => Promise.race([document.fonts.ready,new Promise(r=>setTimeout(r,8000))])")

@@ -52,6 +52,20 @@ class NetworkBoundaryTests(unittest.TestCase):
 
 
 class JinjiangRouteTests(unittest.IsolatedAsyncioTestCase):
+    async def test_directory_scan_never_reads_keychain_credentials(self):
+        reader = SimpleNamespace(
+            page=SimpleNamespace(url=URL, evaluate=AsyncMock(return_value={'ok':True,'chapters':[]})),
+        )
+        with patch.object(jinjiang,'install',AsyncMock(return_value=True)), \
+             patch.object(jinjiang,'has_token') as presence, \
+             patch.object(jinjiang,'token_helper') as helper:
+            result = await jinjiang.invoke(reader,'scan')
+        self.assertTrue(result['ok'])
+        self.assertFalse(reader.page.evaluate.call_args.args[1]['args']['has_token'])
+        presence.assert_not_called()
+        helper.assert_not_called()
+        self.assertIsNone(reader._jinjiang_scope)
+
     async def test_presence_endpoint_never_returns_token_value(self):
         from novelist import server
         from test_translation_integration import http_json

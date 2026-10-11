@@ -33,7 +33,19 @@ def _text(value: object) -> str:
 
 
 def _captured(chapter: dict) -> bool:
-    return chapter.get("state") in _CAPTURED_STATES and bool(_text(chapter.get("text")).strip())
+    if chapter.get("state") not in _CAPTURED_STATES:
+        return False
+    # Coverage only needs one exportable character; do not sanitize the whole
+    # chapter each time the app polls download progress.
+    value = chapter.get("text")
+    return any(
+        not char.isspace() and (
+            0x20 <= ord(char) <= 0xD7FF
+            or 0xE000 <= ord(char) <= 0xFFFD
+            or 0x10000 <= ord(char) <= 0x10FFFF
+        )
+        for char in str(value if value is not None else "")
+    )
 
 
 def _needs_review(chapter: dict) -> bool:

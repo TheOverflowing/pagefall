@@ -42,21 +42,14 @@ echo "正在构建本地文字识别…"
   -module-cache-path "$novelist_build/swift-module-cache" \
   "$novelist_root/native/vision_ocr.swift" \
   -o "$novelist_build/vision-ocr"
-/usr/bin/xcrun swiftc -O -framework Security \
-  -target "$novelist_arch-apple-macosx14.0" \
-  "$novelist_root/native/session_store.swift" -o "$novelist_build/session-store"
-/usr/bin/codesign --force --sign - --identifier local.novelist.session-store "$novelist_build/session-store"
-/usr/bin/xcrun swiftc -O -framework Security \
-  -target "$novelist_arch-apple-macosx14.0" \
-  "$novelist_root/native/api_key_store.swift" -o "$novelist_build/api-key-store"
-/usr/bin/codesign --force --sign - --identifier local.novelist.api-key-store "$novelist_build/api-key-store"
+NOVELIST_BUILD_PATH="$novelist_build" bash "$novelist_root/scripts/build_keychain_helpers.sh"
 
 echo "正在构建拾页原生界面…"
 /usr/bin/xcrun swiftc -O -parse-as-library \
   -target "$novelist_arch-apple-macosx14.0" \
   -module-cache-path "$novelist_build/swift-module-cache" \
   -framework SwiftUI -framework AppKit \
-  "$novelist_root/native/App.swift" "$novelist_root/native/LibraryView.swift" "$novelist_root/native/Localization.swift" "$novelist_root/native/TranslationViews.swift" "$novelist_root/native/BookViews.swift" "$novelist_root/native/LibraryFiltering.swift" "$novelist_root/native/LibraryFiltersView.swift" \
+  "$novelist_root/native/App.swift" "$novelist_root/native/LibraryView.swift" "$novelist_root/native/Localization.swift" "$novelist_root/native/TranslationViews.swift" "$novelist_root/native/BookViews.swift" "$novelist_root/native/LibraryFiltering.swift" "$novelist_root/native/LibraryFiltersView.swift" "$novelist_root/native/ChapterVersionsView.swift" "$novelist_root/native/UpdateMonitorView.swift" \
   -o "$novelist_build/NovelistApp"
 
 mkdir -p "$novelist_app/Contents/MacOS" "$novelist_app/Contents/Resources"

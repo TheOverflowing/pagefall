@@ -1,5 +1,5 @@
 """On-demand reading does not alter download books or make AI calls."""
-import json,tempfile,unittest
+import asyncio,copy,json,tempfile,time,unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock,patch
@@ -13,17 +13,65 @@ BOOK={'id':'42','url':'https://www.jjwxc.net/onebook.php?novelid=42','title':'Fi
 class CatalogTests(unittest.IsolatedAsyncioTestCase):
  def setUp(self):
   self.temp=tempfile.TemporaryDirectory();self.addCleanup(self.temp.cleanup);self.catalog=module.Catalog(Path(self.temp.name)/'catalogs')
-  self.reader=SimpleNamespace(scan=AsyncMock(return_value=BOOK.copy()),page=SimpleNamespace(evaluate=AsyncMock(return_value={'description':'Fixture synopsis'})),close=AsyncMock(),capture=AsyncMock(return_value={'text':'A self-authored chapter.','method':'jjwxc_api','incomplete':False}))
+  self.reader=SimpleNamespace(scan=AsyncMock(return_value=copy.deepcopy(BOOK)),page=SimpleNamespace(evaluate=AsyncMock(return_value={'description':'Fixture synopsis'})),close=AsyncMock(),capture=AsyncMock(return_value={'text':'A self-authored chapter.','method':'jjwxc_api','incomplete':False}))
   self.patcher=patch.object(module,'Reader',return_value=self.reader);self.patcher.start();self.addCleanup(self.patcher.stop)
-  self.extra=patch.object(module,'public_app_metadata',return_value={});self.extra.start();self.addCleanup(self.extra.stop)
+  self.extra=patch.object(module,'details_app_metadata',return_value={});self.extra.start();self.addCleanup(self.extra.stop)
  async def test_details_are_cached_without_creating_a_download(self):
   value=await self.catalog.fetch(BOOK['url']);self.assertEqual(value['metadata']['description'],'Fixture synopsis')
   await self.catalog.fetch(BOOK['url']);self.reader.scan.assert_awaited_once()
   self.assertFalse((Path(self.temp.name)/'books').exists())
+  self.assertFalse(module.Reader.call_args.kwargs['hydrate_session'])
+ async def test_old_details_are_available_after_restart_without_network_or_read_lock(self):
+  saved={**BOOK,'schema':2,'cached_at':time.time()-86400,'metadata':{'description':'Saved synopsis'}}
+  self.catalog.write(self.catalog.directory/'42.json',saved)
+  restarted=module.Catalog(self.catalog.directory)
+  async with restarted.lock:
+   value=await asyncio.wait_for(restarted.fetch(BOOK['url']),.2)
+  self.assertEqual(value['metadata'],saved['metadata']);self.assertTrue(value['details_stale'])
+  self.reader.scan.assert_not_awaited();module.Reader.assert_not_called()
+  self.assertNotIn('details_stale',restarted.cached('42'))
+ async def test_opening_the_same_uncached_book_shares_the_fetch(self):
+  first,second=await asyncio.gather(self.catalog.fetch(BOOK['url']),self.catalog.fetch(BOOK['url']))
+  self.reader.scan.assert_awaited_once();self.assertEqual(first,second)
+ async def test_recent_legacy_details_return_immediately_then_refresh_chapter_metadata_once(self):
+  legacy={**BOOK,'schema':2,'cached_at':time.time(),'metadata':{'description':'Saved synopsis'}}
+  self.catalog.write(self.catalog.directory/'42.json',legacy)
+  value=await self.catalog.fetch(BOOK['url'])
+  self.assertTrue(value['details_stale']);self.reader.scan.assert_not_awaited()
+  self.reader.scan.return_value={**copy.deepcopy(BOOK),'chapters':[{**BOOK['chapters'][0],'source_updated_at':'2026-10-09 12:01:02'}]}
+  refreshed=await self.catalog.fetch(BOOK['url'],True)
+  self.assertFalse(refreshed['details_stale'])
+  self.assertEqual(refreshed['chapter_metadata_version'],module.CHAPTER_METADATA_VERSION)
+  restarted=module.Catalog(self.catalog.directory)
+  warm=await restarted.fetch(BOOK['url'])
+  self.assertFalse(warm['details_stale']);self.reader.scan.assert_awaited_once()
+  self.assertEqual(warm['chapters'][0]['source_updated_at'],'2026-10-09 12:01:02')
+ async def test_checked_directory_without_update_dates_does_not_refresh_repeatedly(self):
+  await self.catalog.fetch(BOOK['url'])
+  value=await module.Catalog(self.catalog.directory).fetch(BOOK['url'])
+  self.assertFalse(value['details_stale']);self.reader.scan.assert_awaited_once()
+ async def test_basic_metadata_and_web_directory_start_together_without_author_request(self):
+  import threading
+  web_started=threading.Event();metadata_started=threading.Event()
+  async def scan(_url):
+   web_started.set()
+   self.assertTrue(await asyncio.to_thread(metadata_started.wait,1))
+   return copy.deepcopy(BOOK)
+  def metadata(_identifier):
+   metadata_started.set();self.assertTrue(web_started.wait(1));return {'characters':[{'id':'a','name':'A'}]}
+  self.reader.scan.side_effect=scan
+  with patch.object(module,'details_app_metadata',side_effect=metadata),patch.object(module,'public_author_publications') as author:
+   value=await self.catalog.fetch(BOOK['url'])
+  author.assert_not_called();self.assertEqual(value['metadata']['characters'][0]['name'],'A')
  async def test_refresh_and_wrong_book_identity(self):
   await self.catalog.fetch(BOOK['url']);await self.catalog.fetch(BOOK['url'],True);self.assertEqual(self.reader.scan.await_count,2)
   self.reader.scan.return_value={**BOOK,'id':'43'}
   with self.assertRaises(CaptureError):await self.catalog.fetch(BOOK['url'],True)
+ async def test_refresh_failure_preserves_the_prior_details(self):
+  await self.catalog.fetch(BOOK['url'])
+  self.reader.scan.side_effect=CaptureError('Unavailable')
+  with self.assertRaises(CaptureError):await self.catalog.fetch(BOOK['url'],True)
+  self.assertEqual((await self.catalog.fetch(BOOK['url']))['title'],'Fixture')
  async def test_reading_fetches_only_requested_chapter_and_reuses_cache(self):
   value=await self.catalog.read(BOOK,'1');self.assertEqual(value['text'],'A self-authored chapter.')
   await self.catalog.read(BOOK,'1');self.reader.capture.assert_awaited_once();self.assertEqual(self.reader.capture.call_args.args[0]['id'],'1')
@@ -39,8 +87,67 @@ class CatalogTests(unittest.IsolatedAsyncioTestCase):
   book={**BOOK,'chapters':[{**BOOK['chapters'][0],'locked':True}]}
   with self.assertRaises(CaptureError):await self.catalog.read(book,'1')
   self.reader.capture.assert_not_awaited()
+ async def test_locked_chapter_keeps_reading_existing_cache_after_restart_and_link_change(self):
+  saved=await self.catalog.read(BOOK,'1')
+  locked={**BOOK,'chapters':[{**BOOK['chapters'][0],'locked':True,'url':'https://www.jjwxc.net/lockedlink.php?novelid=42&chapterid=1'}]}
+  restarted=module.Catalog(self.catalog.directory)
+  value=await restarted.read(locked,'1')
+  self.assertEqual(value,saved);self.reader.capture.assert_awaited_once()
+  self.assertEqual(len(restarted.versions.list('42','1')),1)
+ async def test_legacy_online_cache_is_archived_with_its_own_source_time(self):
+  saved={'id':'1','book_id':'42','title':'Saved title','url':BOOK['chapters'][0]['url'],'text':'Original local text.','method':'ocr','source_updated_at':'2026-10-01 12:00:00'}
+  self.catalog.write(Path(self.temp.name)/'reading/42/1.json',saved)
+  book={**BOOK,'chapters':[{**BOOK['chapters'][0],'locked':True,'source_updated_at':'2026-10-10 15:00:00'}]}
+  value=await self.catalog.read(book,'1')
+  self.assertEqual(value,saved);self.reader.capture.assert_not_awaited()
+  versions=self.catalog.versions.list('42','1');self.assertEqual(len(versions),1)
+  self.assertEqual((versions[0]['kind'],versions[0]['source_updated_at']),('existing','2026-10-01 12:00:00'))
+ async def test_explicit_refresh_archives_changed_text_and_retains_source_times(self):
+  old={**BOOK,'chapters':[{**BOOK['chapters'][0],'source_updated_at':'2026-10-01 12:00:00'}]}
+  first=await self.catalog.read(old,'1')
+  new={**BOOK,'chapters':[{**BOOK['chapters'][0],'source_updated_at':'2026-10-10 12:00:00'}]}
+  self.reader.capture.return_value={'text':'Revised self-authored chapter.','method':'jjwxc_api','incomplete':False}
+  second=await self.catalog.read(new,'1',refresh=True)
+  self.assertEqual(second['text'],'Revised self-authored chapter.')
+  versions=self.catalog.versions.list('42','1');self.assertEqual(len(versions),2)
+  self.assertEqual([row['source_updated_at'] for row in versions],['2026-10-10 12:00:00','2026-10-01 12:00:00'])
+  self.assertEqual(self.catalog.versions.get('42','1',versions[1]['id'])['text'],first['text'])
+  await self.catalog.read(new,'1',refresh=True)
+  self.assertEqual(len(self.catalog.versions.list('42','1')),2)
+ async def test_failed_or_locked_refresh_leaves_previous_text_and_history_intact(self):
+  first=await self.catalog.read(BOOK,'1')
+  self.reader.capture.side_effect=CaptureError('Unavailable','blocked',False)
+  with self.assertRaises(CaptureError):await self.catalog.read(BOOK,'1',refresh=True)
+  locked={**BOOK,'chapters':[{**BOOK['chapters'][0],'locked':True}]}
+  with self.assertRaises(CaptureError):await self.catalog.read(locked,'1',refresh=True)
+  self.assertEqual(await self.catalog.read(locked,'1'),first)
+  self.assertEqual(len(self.catalog.versions.list('42','1')),1)
+  self.assertEqual(self.reader.capture.await_count,2)
+
+ async def test_unchanged_source_check_does_not_rearchive_over_a_local_edit(self):
+  import hashlib
+  original=await self.catalog.read(BOOK,'1')
+  edited={**original,'text':'A local edit kept in version history.'}
+  self.catalog.versions.record(BOOK['id'],edited,kind='edit')
+  before=self.catalog.versions.list(BOOK['id'],'1')
+  refreshed=await self.catalog.read(BOOK,'1',refresh=True,previous_source_hash=hashlib.sha256(original['text'].encode()).hexdigest())
+  self.assertEqual(refreshed['text'],original['text'])
+  self.assertEqual(self.catalog.versions.list(BOOK['id'],'1'),before)
+ async def test_mismatched_cache_identity_cannot_supply_a_locked_chapter(self):
+  self.catalog.write(Path(self.temp.name)/'reading/42/1.json',{'id':'1','book_id':'43','text':'Another book.'})
+  locked={**BOOK,'chapters':[{**BOOK['chapters'][0],'locked':True}]}
+  with self.assertRaises(CaptureError):await self.catalog.read(locked,'1')
+  self.assertIsNone(self.catalog.cached_read('42','1'));self.reader.capture.assert_not_awaited()
+  self.assertEqual(self.catalog.versions.list('42','1'),[])
 
 class MetadataTests(unittest.TestCase):
+ def test_details_do_not_wait_for_publication_dates_when_fetching_basic_metadata(self):
+  basic={'author_id':'7','basic_checked':True,'tags':['甜文'],'classification':{'favorite_count':172}}
+  with patch.object(module,'public_app_basic_metadata',return_value=basic),patch.object(module,'public_author_publications') as author:
+   self.assertEqual(module.details_app_metadata('42'),basic)
+  author.assert_not_called()
+  with patch.object(module,'public_app_basic_metadata',side_effect=module.PublicMetadataInterrupted('network')):
+   self.assertEqual(module.details_app_metadata('42'),{})
  def test_author_dates_are_reused_from_disk_for_another_book_after_restart(self):
   html='<table class="author novel"><tr><td><a onclick="jump_book2(42,7)">One</a></td></tr><tr><td>发表时间：2026-03-30 19:00:00</td></tr></table><table class="author novel"><tr><td><a onclick="jump_book2(43,7)">Two</a></td></tr><tr><td>发表时间：2025-09-12 00:00:00</td></tr></table>'
   with tempfile.TemporaryDirectory() as directory,patch.object(module,'read_public_source',return_value=html.encode('gb18030')) as fetch:
@@ -165,6 +272,25 @@ class MetadataTests(unittest.TestCase):
   result=module.parse_app_metadata({'novelId':'42','characters':{},'character_relations':{}},'42');self.assertEqual(result['characters'],[])
 
 class CatalogRouteTests(unittest.IsolatedAsyncioTestCase):
+ async def test_cached_details_keep_the_stale_marker_and_do_not_rewrite_classifications(self):
+  cached={**BOOK,'schema':2,'cached_at':1,'metadata':{'description':'Cached synopsis'}}
+  with patch.object(server.workbench,'get_book',side_effect=HTTPException(404)),patch.object(server.workbench,'library_cache',{'books':[BOOK]}),patch.object(server.catalog,'cached',return_value=cached),patch.object(server.catalog,'fetch',AsyncMock(return_value={**cached,'details_stale':True})),patch.object(server.workbench,'remember_metadata') as remember:
+   status,_,result=await http_json('/api/book-details',method='POST',data={'id':'42'})
+  self.assertEqual(status,200);self.assertTrue(result['details_stale']);remember.assert_not_called()
+ async def test_refreshed_directory_includes_new_chapters_and_keeps_saved_content(self):
+  saved={**BOOK,'chapters':[{**BOOK['chapters'][0],'title':'Old title','state':'done','text':'Self-authored local text.','source_updated_at':'2026-10-01 12:00:00'},{'id':'3','title':'Saved chapter','url':'https://www.jjwxc.net/onebook.php?novelid=42&chapterid=3','state':'done','text':'Another self-authored chapter.'}]}
+  original=copy.deepcopy(saved)
+  remote={**BOOK,'schema':2,'cached_at':2,'details_stale':False,'chapters':[{**BOOK['chapters'][0],'title':'Current title','summary':'New summary','source_updated_at':'2026-10-09 12:01:02'},{'id':'2','title':'New chapter','url':'https://www.jjwxc.net/onebook.php?novelid=42&chapterid=2','state':'pending'}]}
+  with patch.object(server.workbench,'get_book',return_value=saved),patch.object(server.workbench,'library_cache',{'books':[BOOK]}),patch.object(server.catalog,'cached',return_value={**BOOK,'cached_at':1}),patch.object(server.catalog,'fetch',AsyncMock(return_value=remote)) as fetch,patch.object(server.workbench,'remember_metadata') as remember:
+   status,_,result=await http_json('/api/book-details',method='POST',data={'id':'42','refresh':True})
+  self.assertEqual(status,200);fetch.assert_awaited_once_with(BOOK['url'],True);remember.assert_called_once()
+  self.assertEqual([chapter['id']for chapter in result['chapters']],['1','2','3'])
+  first,second,third=result['chapters']
+  self.assertEqual((first['title'],first['state']),('Current title','done'));self.assertEqual(first['summary'],'New summary')
+  self.assertEqual(first['source_updated_at'],'2026-10-09 12:01:02')
+  self.assertEqual(second['state'],'pending');self.assertTrue(third['absent_from_toc']);self.assertEqual(third['state'],'review')
+  self.assertEqual(result['toc_chapter_count'],2);self.assertFalse(result['details_stale']);self.assertEqual(saved,original)
+  self.assertNotIn('text',first)
  async def test_unknown_book_and_client_supplied_url_are_not_fetched(self):
   with patch.object(server.workbench,'get_book',side_effect=HTTPException(404)),patch.object(server.workbench,'library_cache',{'books':[]}),patch.object(server.catalog,'cached',return_value=None),patch.object(server.catalog,'fetch',AsyncMock())as fetch:
    status,_,_=await http_json('/api/book-details',method='POST',data={'id':'42','url':'https://evil.invalid'});self.assertEqual(status,404);fetch.assert_not_awaited()
@@ -198,6 +324,13 @@ class PublicBookMetadataTests(unittest.TestCase):
  def test_saved_chapters_receive_catalog_summaries_without_source_mutation(self):
   import copy
   original=copy.deepcopy(BOOK)
-  with patch.object(server.catalog,'cached',return_value={**BOOK,'chapters':[{**BOOK['chapters'][0],'summary':'Public chapter summary.'}],'metadata':{'description':'Public synopsis.'}}):
+  with patch.object(server.catalog,'cached',return_value={**BOOK,'chapters':[{**BOOK['chapters'][0],'summary':'Public chapter summary.','source_updated_at':'2026-10-09 12:01:02'}],'metadata':{'description':'Public synopsis.'}}):
    result=server.public_book(BOOK)
   self.assertEqual(result['chapters'][0]['summary'],'Public chapter summary.');self.assertEqual(BOOK,original)
+  self.assertEqual(result['chapters'][0]['source_updated_at'],'2026-10-09 12:01:02')
+ def test_current_directory_update_wins_over_old_catalog_date(self):
+  cached={**BOOK,'chapters':[{**BOOK['chapters'][0],'source_updated_at':'2026-10-01 12:00:00'}]}
+  for current in ('2026-10-09 12:01:02',''):
+   book={**BOOK,'chapters':[{**BOOK['chapters'][0],'source_updated_at':current}]}
+   with self.subTest(current=current),patch.object(server.catalog,'cached',return_value=cached):
+    self.assertEqual(server.public_book(book)['chapters'][0]['source_updated_at'],current)

@@ -1,6 +1,5 @@
 """Book information and on-demand chapter reading, separate from downloads."""
 import asyncio
-import copy
 import json
 from pathlib import Path
 import tempfile
@@ -10,8 +9,10 @@ from html.parser import HTMLParser
 import threading
 
 from .browser import Reader, ROOT, CaptureError, normalize_url, book_id
+from .chapter_versions import ChapterVersions
 
 CLASSIFICATION_VERSION = 2
+CHAPTER_METADATA_VERSION = 1
 PUBLIC_REQUEST_INTERVAL = 0.4
 PUBLIC_REQUEST_LOCK = threading.Lock()
 PUBLIC_REQUEST_SLOTS = threading.BoundedSemaphore(3)
@@ -32,7 +33,7 @@ def read_public_source(url):
     from urllib.error import HTTPError, URLError
     global PUBLIC_LAST_REQUEST
     parsed=urlparse(url)
-    if parsed.scheme!='https' or parsed.hostname not in {'app-cdn.jjwxc.net','wap.jjwxc.net'} or parsed.port not in (None,443) or parsed.username or parsed.password:raise ValueError('Unsupported public metadata source')
+    if parsed.scheme!='https' or parsed.hostname not in {'app-cdn.jjwxc.net','wap.jjwxc.net','www.jjwxc.net'} or parsed.port not in (None,443) or parsed.username or parsed.password:raise ValueError('Unsupported public metadata source')
     command=['/usr/bin/curl','--disable','--silent','--show-error','--proto','=https','--no-location','--max-redirs','0','--cacert','/etc/ssl/cert.pem','--max-time','15','--max-filesize',str(2*1024*1024),'--user-agent','Pagefall/0.7','--write-out','\n%{http_code}','--url',url]
     with PUBLIC_REQUEST_SLOTS:
         with PUBLIC_REQUEST_LOCK:
@@ -78,6 +79,8 @@ class Catalog:
     def __init__(self, directory):
         self.directory = Path(directory)
         self.lock = asyncio.Lock()
+        self.details_locks = {}
+        self.versions = ChapterVersions(self.directory.parent/'chapter-versions')
 
     def cached(self, identifier):
         try:
@@ -90,52 +93,97 @@ class Catalog:
         path.parent.mkdir(parents=True,exist_ok=True,mode=0o700)
         temp=path.with_suffix('.tmp');temp.write_text(json.dumps(value,ensure_ascii=False));temp.chmod(0o600);temp.replace(path)
 
+    def cached_read(self, identifier, chapter_id):
+        path=self.directory.parent/'reading'/identifier/(chapter_id+'.json')
+        try:cached=json.loads(path.read_text())
+        except (OSError,ValueError):return None
+        if isinstance(cached,dict) and cached.get('book_id')==identifier and cached.get('id')==chapter_id and isinstance(cached.get('text'),str) and cached['text'].strip():return cached
+        return None
+
+    def details_stale(self, cached, now):
+        return now-cached.get('cached_at',0)>=600 or (cached.get('platform','jjwxc')=='jjwxc' and cached.get('chapter_metadata_version')!=CHAPTER_METADATA_VERSION)
+
     async def fetch(self, url, refresh=False):
         url=normalize_url(url);identifier=book_id(url)
-        async with self.lock:
+        requested_at=time.time()
+        cached=self.cached(identifier)
+        if cached and cached.get('schema')==2 and not refresh:
+            return {**cached,'details_stale':self.details_stale(cached,requested_at)}
+        async with self.details_locks.setdefault(identifier,asyncio.Lock()):
             cached=self.cached(identifier)
-            if cached and cached.get('schema')==2 and not refresh and time.time()-cached.get('cached_at',0)<600:
-                return cached
+            if cached and cached.get('schema')==2 and (not refresh or cached.get('cached_at',0)>=requested_at):
+                return {**cached,'details_stale':self.details_stale(cached,time.time())}
             with tempfile.TemporaryDirectory(prefix='shiye-catalog-') as temporary:
-                reader=Reader(Path(temporary)/'browser')
+                from .platforms import platform_for
+                reader=Reader(Path(temporary)/'browser',hydrate_session=False)
+                metadata_task=asyncio.create_task(asyncio.to_thread(details_app_metadata,identifier)) if platform_for(url).id=='jjwxc' else None
                 try:
                     result=await reader.scan(url)
                     if result.get('id')!=identifier:raise CaptureError('作品页面跳转到了其他书籍，请重新打开。','blocked',False)
                     if result.get('platform')=='jjwxc':
                         result['metadata']=await reader.page.evaluate(DETAILS_SCRIPT)
-                        extra=await asyncio.to_thread(public_app_metadata,identifier)
+                        extra=await metadata_task
                         result['metadata'].update({k:v for k,v in extra.items()if v})
                     if result.get('platform')=='jjwxc':
                         summaries=await reader.page.evaluate(TOC_SUMMARIES_SCRIPT)
                         for chapter in result['chapters']:
                             chapter['summary']=summaries.get(chapter['id'],'')
+                        result['chapter_metadata_version']=CHAPTER_METADATA_VERSION
                     result['schema']=2
                     result['cached_at']=time.time()
                     self.write(self.directory/(identifier+'.json'),result)
-                    return result
-                finally:await reader.close(remember=False)
+                    return {**result,'details_stale':False}
+                finally:
+                    if metadata_task and not metadata_task.done():
+                        metadata_task.cancel()
+                        await asyncio.gather(metadata_task,return_exceptions=True)
+                    await reader.close(remember=False)
 
-    async def read(self, book, chapter_id):
+    async def read(self, book, chapter_id, refresh=False, previous_source_hash=None):
         chapter=next((c for c in book['chapters'] if c['id']==chapter_id),None)
         if not chapter:raise ValueError('章节不存在。')
-        if chapter.get('locked'):raise CaptureError('目录标注本章已锁定，当前无法阅读。','blocked',False)
         chapter={**chapter,'book_url':book['url']}
         path=self.directory.parent/'reading'/book['id']/(chapter_id+'.json')
         async with self.lock:
-            try:
-                cached=json.loads(path.read_text())
-                if cached.get('url')==chapter['url'] and cached.get('text'):
-                    return cached
-            except (OSError,ValueError):pass
+            cached=self.cached_read(book['id'],chapter_id)
+            if cached:
+                self.versions.record(book['id'],cached,kind='existing')
+                if not refresh:return cached
+            if chapter.get('locked'):raise CaptureError('本章已锁定，暂时无法更新。' if refresh else '目录标注本章已锁定，当前无法阅读。','blocked',False)
             with tempfile.TemporaryDirectory(prefix='shiye-reading-') as temporary:
                 reader=Reader(Path(temporary)/'browser')
                 try:
                     result=await reader.capture(chapter,Path(temporary)/'source',mode='auto')
                     if result.get('incomplete'):raise CaptureError('本章正文可能不完整，请稍后重试。','failed',False)
-                    value={'id':chapter_id,'book_id':book['id'],'title':chapter['title'],'url':chapter['url'],'text':result['text'],'method':result['method']}
+                    value={'id':chapter_id,'book_id':book['id'],'title':chapter['title'],'url':chapter['url'],'text':result['text'],'method':result['method'],'source_updated_at':chapter.get('source_updated_at')}
+                    import hashlib
+                    if previous_source_hash is None or hashlib.sha256(value['text'].encode()).hexdigest()!=previous_source_hash:
+                        self.versions.record(book['id'],value,kind='source')
                     self.write(path,value)
                     return value
                 finally:await reader.close(remember=False)
+
+    async def watch_fetch(self, book):
+        from .platforms import platform_for
+        from .chapter_catalog import parse_directory
+        url = normalize_url(book['url'])
+        if platform_for(url).id != 'jjwxc':
+            return await self.fetch(url, refresh=True)
+        identifier = book_id(url)
+        raw = await asyncio.to_thread(read_public_source, url)
+        result = parse_directory(raw, identifier)
+        async with self.details_locks.setdefault(identifier, asyncio.Lock()):
+            cached = self.cached(identifier) or {}
+            result = {**book, **cached, **result, 'chapter_metadata_version': CHAPTER_METADATA_VERSION,
+                      'catalog_checked_at': time.time()}
+            # A directory check does not refresh synopsis or other book metadata.
+            self.write(self.directory/(identifier+'.json'), result)
+        return result
+
+
+def details_app_metadata(identifier):
+    try:return public_app_basic_metadata(identifier)
+    except PublicMetadataInterrupted:return {}
 
 
 def public_app_basic_metadata(identifier):

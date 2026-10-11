@@ -331,6 +331,66 @@ struct NativeLibraryFilterTests {
         expect(updatedIndex.matchingBooks(combined, now: shanghaiNow).map(\.id) == ["lily", "unknown"], "Newly enriched books appear in an existing filter in shelf order")
         expect(LibraryFilterIndex(books: []).matchingBooks(combined, now: shanghaiNow).isEmpty, "An empty index remains empty")
 
+        let cache = FileManager.default.temporaryDirectory.appendingPathComponent("pagefall-library-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: cache, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: cache) }
+        try Data(#"{"books":[{"id":"ready","title":"春日","author":"作者","url":"https://example.test/1"},{"id":"basic","title":"冬日","author":"作者","url":"https://example.test/2"},{"id":"unknown","title":"预约","author":"另一作者","url":"https://example.test/3"}],"account":{"state":"connected","nickname":"Reader"},"expected_count":3,"complete":true}"#.utf8).write(to: cache.appendingPathComponent("library.json"))
+        try Data(#"{"ready":["甜文","快穿"],"basic":["剧情"],"unknown":[]}"#.utf8).write(to: cache.appendingPathComponent("library-tags.json"))
+        try Data(#"{"ready":{"orientation":"百合","perspective":"主受","favorite_count":4000,"published_at":"2026-09-01","_checked_version":2},"basic":{"orientation":"言情","favorite_count":200,"_basic_checked":true},"unknown":{"published_at":null,"_checked_version":2}}"#.utf8).write(to: cache.appendingPathComponent("library-classifications.json"))
+        let cachedShelf = try LibraryState.cached(in: cache)
+        expect(cachedShelf.books.map(\.id) == ["ready", "basic", "unknown"], "Startup cache retains shelf order")
+        expect(cachedShelf.account.nickname == "Reader" && cachedShelf.expected_count == 3 && cachedShelf.complete == true, "Startup cache retains shelf and account information")
+        expect(cachedShelf.classification_count == 2 && cachedShelf.classification_basic_count == 3, "Startup cache retains both enrichment stages, including checked books with no date")
+        expect(cachedShelf.syncing == false && cachedShelf.classification_loading == false, "Startup cache does not revive saved in-flight activity")
+        expect(cachedShelf.books[0].tags == ["甜文", "快穿"], "Startup cache merges saved tags")
+        expect(cachedShelf.books[0].classification?.favorite_count == 4000, "Startup cache merges saved classification")
+        expect(cachedShelf.books[2].classification?.publishedDate == nil, "Startup cache keeps unknown publication dates unknown")
+        combined = LibraryFilterSelection(); combined.toggle("百合", in: .orientation); combined.toggle("主受", in: .perspective)
+        combined.favoriteRanges = [.from1kTo5k]; combined.publicationPeriods = [.last2Months]; combined.tags = ["甜文"]
+        expect(LibraryFilterIndex(books: cachedShelf.books).matchingBooks(combined, now: shanghaiNow).map(\.id) == ["ready"], "Combined filters work before a backend response")
+        let reloadedShelf = try LibraryState.cached(in: cache)
+        expect(reloadedShelf == cachedShelf, "Reopening the same disk cache preserves the complete snapshot")
+        try FileManager.default.removeItem(at: cache.appendingPathComponent("library-tags.json"))
+        try FileManager.default.removeItem(at: cache.appendingPathComponent("library-classifications.json"))
+        let unenrichedShelf = try LibraryState.cached(in: cache)
+        expect(unenrichedShelf.books.count == 3, "A shelf with no enrichment cache remains immediately readable")
+        expect(unenrichedShelf.classification_count == 0 && unenrichedShelf.classification_basic_count == 0, "Missing enrichment caches do not appear complete")
+
+        let defaultsSuite = "pagefall-filter-tests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuite)!
+        defer { defaults.removePersistentDomain(forName: defaultsSuite) }
+        expect(LibraryFilterSelection.load(from: defaults).isEmpty, "The first launch starts without filters")
+        var applied = LibraryFilterSelection()
+        applied.facets = [.orientation: ["百合"], .perspective: ["主受"], .originality: ["原创"], .era: ["近代现代"], .genre: ["爱情"], .status: ["连载"]]
+        applied.wordRanges = [.under100k]
+        applied.publicationPeriods = [.last2Months]
+        applied.publicationYears = [2024]
+        applied.favoriteRanges = [.from1kTo5k]
+        applied.tags = ["甜文", "快穿"]
+        applied.matchAllTags = false
+        applied.save(to: defaults)
+        let reopenedDefaults = UserDefaults(suiteName: defaultsSuite)!
+        let restored = LibraryFilterSelection.load(from: reopenedDefaults)
+        expect(restored == applied, "Reopening preferences preserves every applied filter and tag mode")
+        expect(index.matchingBooks(restored, now: shanghaiNow).map(\.id) == ["lily"], "Restored combined filters produce the same matching books")
+        applied.tags.remove("快穿")
+        applied.publicationYears.remove(2024)
+        applied.save(to: defaults)
+        expect(LibraryFilterSelection.load(from: reopenedDefaults) == applied, "Removing applied choices persists the remaining filters")
+        LibraryFilterSelection().save(to: defaults)
+        let cleared = LibraryFilterSelection.load(from: reopenedDefaults)
+        expect(cleared.isEmpty && cleared.matchAllTags, "Clearing filters remains cleared after reopening preferences")
+
+        let filterDecoder = JSONDecoder()
+        let olderSelection = try filterDecoder.decode(LibraryFilterSelection.self, from: Data(#"{"facets":{"orientation":["百合"]},"tags":["甜文"]}"#.utf8))
+        expect(olderSelection.facets[.orientation] == ["百合"] && olderSelection.tags == ["甜文"], "Older saved filters retain their existing choices")
+        expect(olderSelection.publicationPeriods.isEmpty && olderSelection.favoriteRanges.isEmpty && olderSelection.matchAllTags, "Missing saved fields use the original defaults")
+        let futureSelection = try filterDecoder.decode(LibraryFilterSelection.self, from: Data(#"{"facets":{"orientation":["百合"],"futureFacet":["unknown"]},"wordRanges":["under100k","futureRange"],"publicationPeriods":["last2Months","futurePeriod"],"favoriteRanges":["from1kTo5k","futureRange"],"futureSetting":true}"#.utf8))
+        expect(futureSelection.facets == [.orientation: ["百合"]], "Unknown facet names do not discard known selections")
+        expect(futureSelection.wordRanges == [.under100k] && futureSelection.publicationPeriods == [.last2Months] && futureSelection.favoriteRanges == [.from1kTo5k], "Unknown range choices do not discard known range choices")
+        defaults.set(Data("invalid JSON".utf8), forKey: "library.appliedFilters")
+        expect(LibraryFilterSelection.load(from: defaults).isEmpty, "An unreadable saved selection leaves the shelf usable without filters")
+
         print("PASS: \(assertions) native library filter assertions")
     }
 }

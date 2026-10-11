@@ -2,10 +2,13 @@ import SwiftUI
 import AppKit
 import UniformTypeIdentifiers
 
-struct Chapter: Decodable, Identifiable {
+struct Chapter: Decodable, Equatable, Identifiable {
     var id: String
     var title: String
     var summary: String?
+    var source_updated_at: String?
+    var update_status: String?
+    var update_detected_at: String?
     var url: String?
     var state: String
     var text: String?
@@ -38,7 +41,7 @@ struct Chapter: Decodable, Identifiable {
     }
 }
 
-struct Book: Decodable, Identifiable {
+struct Book: Decodable, Equatable, Identifiable {
     var id: String
     var title: String
     var author: String
@@ -53,9 +56,10 @@ struct Book: Decodable, Identifiable {
     var proofreading: BookProofreading?
     var translation: BookTranslation?
     var metadata: BookMetadata?
+    var details_stale: Bool?
 }
 
-struct ProgressInfo: Decodable {
+struct ProgressInfo: Decodable, Equatable {
     var done: Int
     var total: Int
     var missing: Int?
@@ -63,7 +67,7 @@ struct ProgressInfo: Decodable {
     var auto_processed: Int?
 }
 
-struct ProofreadIssue: Decodable {
+struct ProofreadIssue: Decodable, Equatable {
     var kind: String?
     var message: String?
     var line: Int?
@@ -77,7 +81,7 @@ struct ProofreadIssue: Decodable {
     }
 }
 struct ProofreadIssueGroup: Identifiable { var id: String; var issues: [ProofreadIssue] }
-struct ChapterProofreading: Decodable {
+struct ChapterProofreading: Decodable, Equatable {
     var status: String?
     var summary: String?
     var issues_count: Int?
@@ -96,7 +100,7 @@ struct ChapterProofreading: Decodable {
         return order.map { ProofreadIssueGroup(id: $0, issues: grouped[$0] ?? []) }
     }
 }
-struct BookProofreading: Decodable {
+struct BookProofreading: Decodable, Equatable {
     var can_undo: Bool?
     var done: Int?
     var total: Int?
@@ -104,7 +108,7 @@ struct BookProofreading: Decodable {
     var issues: Int?
     var completed_at: String?
 }
-struct ProofreadingProgress: Decodable {
+struct ProofreadingProgress: Decodable, Equatable {
     var book_id: String?
     var running: Bool?
     var done: Int?
@@ -114,7 +118,7 @@ struct ProofreadingProgress: Decodable {
     var message: String?
 }
 
-struct AppState: Decodable {
+struct AppState: Decodable, Equatable {
     var busy: Bool
     var browser_open: Bool
     var phase: String
@@ -129,28 +133,11 @@ struct AppState: Decodable {
     var queue: [QueueItem]?
     var proofreading: ProofreadingProgress?
     var translation: TranslationProgress?
+    var updates: UpdateMonitorState?
     static let empty = AppState(busy: false, browser_open: false, phase: "idle", message: L("正在连接本地识别服务…"), book: nil, progress: ProgressInfo(done: 0, total: 0))
 }
 
-struct AccountInfo: Decodable, Equatable {
-    var state: String
-    var nickname: String?
-    var verified_at: String?
-    var message: String?
-}
-struct LibraryState: Decodable, Equatable {
-    var books: [LibraryBook]
-    var account: AccountInfo
-    var expected_count: Int?
-    var complete: Bool?
-    var syncing: Bool?
-    var message: String?
-    var classification_loading: Bool?
-    var classification_count: Int?
-    var classification_basic_count: Int?
-    static let empty = LibraryState(books: [], account: AccountInfo(state: "unknown"))
-}
-struct QueueItem: Decodable, Identifiable {
+struct QueueItem: Decodable, Equatable, Identifiable {
     var id: String
     var url: String
     var mode: String
@@ -189,14 +176,22 @@ final class Model: ObservableObject {
     @Published var editing: Chapter?
     @Published var reading: OnlineChapter?
     @Published var readingChapter = false
+    @Published var refreshingChapterID: String?
+    @Published var chapterRefreshError: String?
+    @Published var updates = UpdateMonitorState.empty
+    @Published var updatesSending = false
+    @Published var updatesError: String?
     @Published var exported: URL?
     @Published var platforms: [PlatformInfo] = []
     @Published var choosingLibraryFolder = false
     private var didLaunch = false
     private var pendingScan = false
     private var checkedLibrary = false
+    private var receivedLibrarySnapshot = false
     private var openRequestID = UUID()
+    private var bookTask: Task<Void, Never>?
     private var refreshingChapter = false
+    private var updateActivity: NSObjectProtocol?
     private var libraryAccessURL: URL?
     private let endpoint = "http://127.0.0.1:8765"
     let root: URL
@@ -228,12 +223,13 @@ final class Model: ObservableObject {
                 libraryAccessURL = saved
             }
         }
+        Task { await loadLibraryCache() }
         Task { await run() }
     }
 
     func request<T: Decodable>(_ path: String, data: [String: Any]? = nil) async throws -> T {
         var req = URLRequest(url: URL(string: endpoint + path)!)
-        req.timeoutInterval = (path.hasPrefix("/api/jinjiang/") || ["/api/book-details", "/api/read-chapter"].contains(path)) ? 240 : 8
+        req.timeoutInterval = (path.hasPrefix("/api/jinjiang/") || ["/api/book-details", "/api/read-chapter", "/api/chapter-refresh"].contains(path)) ? 240 : 8
         if let data {
             req.httpMethod = "POST"
             req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -255,22 +251,24 @@ final class Model: ObservableObject {
                 let fresh: AppState = try await request("/api/state")
                 if !connected { notice = nil; Localization.shared.updateNativeMenus() }
                 apply(fresh)
+                if !connected { connected = true }
+                failures = 0
                 if tick % 5 == 0 || fresh.library_syncing == true || libraryState.syncing == true || libraryState.classification_loading == true {
-                    updateLibrary(try await request("/api/library"))
+                    if let snapshot: LibraryState = try? await request("/api/library") {
+                        receivedLibrarySnapshot = true
+                        updateLibrary(snapshot)
+                    }
                 }
                 if platforms.isEmpty {
-                    let available: PlatformList = try await request("/api/platforms")
-                    platforms = available.platforms
+                    if let available: PlatformList = try? await request("/api/platforms") { platforms = available.platforms }
                 }
                 tick += 1
-                connected = true
-                failures = 0
                 if !checkedLibrary && fresh.account_waiting != true {
                     checkedLibrary = true
-                    let _: Acknowledgement = try await request("/api/library/refresh", data: [:])
+                    let _: Acknowledgement? = try? await request("/api/library/refresh", data: [:])
                 }
             } catch {
-                connected = false
+                if connected { connected = false }
                 failures += 1
                 if !didLaunch {
                     didLaunch = true
@@ -283,6 +281,15 @@ final class Model: ObservableObject {
         }
     }
 
+    private func loadLibraryCache() async {
+        let directory = root.appendingPathComponent(".local", isDirectory: true)
+        let snapshot = await Task.detached(priority: .userInitiated) {
+            try? LibraryState.cached(in: directory)
+        }.value
+        guard !receivedLibrarySnapshot, let snapshot else { return }
+        updateLibrary(snapshot)
+    }
+
     private func updateLibrary(_ fresh: LibraryState) {
         guard fresh != libraryState else { return }
         if fresh.books != libraryState.books { libraryFilterIndex = LibraryFilterIndex(books: fresh.books) }
@@ -292,14 +299,23 @@ final class Model: ObservableObject {
     private func apply(_ fresh: AppState) {
         let previousProof = state.proofreading
         let previousTranslation = state.translation
-        state = fresh
-        downloads = fresh.downloads ?? []
-        queued = (fresh.queue ?? []).filter { !(fresh.busy && $0.id == fresh.book?.id) }
+        let previousBook = state.book
+        let previousRevision = updates.revision
+        if let value = fresh.updates, value != updates { updates = value }
+        updateBackgroundActivity()
+        if state != fresh { state = fresh }
+        let freshDownloads = fresh.downloads ?? []
+        if downloads != freshDownloads { downloads = freshDownloads }
+        let freshQueue = (fresh.queue ?? []).filter { !(fresh.busy && $0.id == fresh.book?.id) }
+        if queued != freshQueue { queued = freshQueue }
         var freshLibrary = libraryState
         if let account = fresh.account { freshLibrary.account = account }
         freshLibrary.syncing = fresh.library_syncing
         updateLibrary(freshLibrary)
-        if var book = fresh.book, detail?.id == book.id { book.metadata = book.metadata ?? detail?.metadata; detail = book }
+        if var book = fresh.book, book != previousBook, detail?.id == book.id {
+            book.metadata = book.metadata ?? detail?.metadata
+            if detail != book { detail = book }
+        }
         if previousProof?.running == true, fresh.proofreading?.running != true,
            let identifier = previousProof?.book_id, detail?.id == identifier { openBook(id: identifier) }
         if previousTranslation?.running == true, fresh.translation?.running != true,
@@ -316,6 +332,63 @@ final class Model: ObservableObject {
             loadingBook = false
             if fresh.phase == "ready" { detail = fresh.book }
             else { notice = fresh.message }
+        }
+        if previousRevision != nil, previousRevision != updates.revision, let identifier = detail?.id {
+            Task {
+                guard let book: Book = try? await request("/api/book-details", data: ["id": identifier]), detail?.id == identifier else { return }
+                detail = book
+            }
+        }
+    }
+
+    func refreshUpdates() async {
+        do { updates = try await request("/api/updates"); updatesError = nil; updateBackgroundActivity() }
+        catch { updatesError = localizedError(error) }
+    }
+
+    private func updateBackgroundActivity() {
+        if updates.enabled && updateActivity == nil {
+            updateActivity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep, reason: "Checking saved novel chapters for updates")
+        } else if !updates.enabled, let activity = updateActivity {
+            ProcessInfo.processInfo.endActivity(activity)
+            updateActivity = nil
+        }
+    }
+
+    func setAutomaticUpdates(_ enabled: Bool) {
+        guard !updatesSending else { return }
+        updatesSending = true
+        Task {
+            defer { updatesSending = false }
+            do {
+                let _: Acknowledgement = try await request("/api/updates/settings", data: ["enabled": enabled])
+                await refreshUpdates()
+            } catch { updatesError = localizedError(error) }
+        }
+    }
+
+    func checkForUpdates() {
+        guard !updatesSending else { return }
+        updatesSending = true
+        Task {
+            defer { updatesSending = false }
+            do {
+                let _: Acknowledgement = try await request("/api/updates/check", data: [:])
+                await refreshUpdates()
+            } catch { updatesError = localizedError(error) }
+        }
+    }
+
+    func markChapterUpdateRead(bookID: String, chapterID: String) {
+        Task {
+            do {
+                let _: Acknowledgement = try await request("/api/chapter-updates/read", data: ["book_id": bookID, "chapter_id": chapterID])
+                if detail?.id == bookID, let index = detail?.chapters.firstIndex(where: { $0.id == chapterID }) {
+                    detail?.chapters[index].update_status = nil
+                    detail?.chapters[index].update_detected_at = nil
+                }
+                await refreshUpdates()
+            } catch { notice = localizedError(error) }
         }
     }
 
@@ -422,22 +495,42 @@ final class Model: ObservableObject {
         }
     }
 
-    func openBook(id: String) {
+    func openBook(id: String, refresh: Bool = false) {
+        bookTask?.cancel()
         let requestID = UUID()
         openRequestID = requestID
         loadingBook = true
         notice = nil
-        Task {
-            defer { if openRequestID == requestID { loadingBook = false } }
-            if let entry = libraryState.books.first(where: { $0.id == id }) {
-                detail = Book(id: entry.id, title: entry.title, author: entry.author, url: entry.url, chapters: [], cover: entry.cover)
+        if detail?.id != id {
+            detail = downloads.first(where: { $0.id == id }) ?? (state.book?.id == id ? state.book : nil)
+            if detail == nil, let entry = libraryState.books.first(where: { $0.id == id }) {
+                let info = entry.classification
+                let metadata = BookMetadata(genre: [info?.originality, info?.orientation, info?.era, info?.genre].compactMap { $0 }.joined(separator: "-"),
+                    status: info?.status, word_count: info?.word_count.map(String.init), perspective: info?.perspective, tags: entry.tags)
+                detail = Book(id: entry.id, title: entry.title, author: entry.author, url: entry.url, chapters: [], cover: entry.cover, metadata: metadata)
             }
-            do {
-                if let saved: Book = try? await request("/api/book?id=" + id), openRequestID == requestID { detail = saved }
-                let book: Book = try await request("/api/book-details", data: ["id": id])
-                if openRequestID == requestID { detail = book }
-            } catch { if openRequestID == requestID { notice = localizedError(error) } }
         }
+        bookTask = Task {
+            defer { if openRequestID == requestID { loadingBook = false } }
+            do {
+                let book: Book = try await request("/api/book-details", data: ["id": id, "refresh": refresh])
+                guard openRequestID == requestID, !Task.isCancelled else { return }
+                detail = book
+                if !refresh && book.details_stale == true {
+                    let updated: Book = try await request("/api/book-details", data: ["id": id, "refresh": true])
+                    if openRequestID == requestID, !Task.isCancelled { detail = updated }
+                }
+            } catch {
+                if openRequestID == requestID, !Task.isCancelled { notice = localizedError(error) }
+            }
+        }
+    }
+
+    func closeBook() {
+        bookTask?.cancel()
+        openRequestID = UUID()
+        loadingBook = false
+        detail = nil
     }
 
     func addBook(url: String) {
@@ -445,11 +538,13 @@ final class Model: ObservableObject {
         self.url = url
         if state.busy { requestDownload(url: url); return }
         pendingScan = true
+        closeBook()
         loadingBook = true
         action("scan", payload: ["url": url])
     }
 
     func openChapter(bookID: String, chapterID: String) {
+        chapterRefreshError = nil
         Task {
             do { editing = try await request("/api/chapter?id=" + chapterID + "&book_id=" + bookID) }
             catch { notice = localizedError(error) }
@@ -458,12 +553,36 @@ final class Model: ObservableObject {
 
     func readChapter(_ book: Book, _ chapter: Chapter) {
         guard !readingChapter else { return }
+        chapterRefreshError = nil
         if ["done", "review", "reviewed"].contains(chapter.state) { openChapter(bookID: book.id, chapterID: chapter.id); return }
         readingChapter = true
         Task {
             defer { readingChapter = false }
             do { let chapter: OnlineChapter = try await request("/api/read-chapter", data: ["book_id": book.id, "chapter_id": chapter.id]); if detail?.id == book.id { reading = chapter } }
             catch { notice = localizedError(error) }
+        }
+    }
+
+    func isRefreshingChapter(bookID: String, chapterID: String) -> Bool {
+        refreshingChapterID == bookID + "/" + chapterID
+    }
+
+    func refreshChapter(bookID: String, chapterID: String) {
+        guard refreshingChapterID == nil, !working, !readingChapter,
+              !proofreading(bookID), !translating(bookID), !AppDelegate.editorHasUnsavedChanges else { return }
+        refreshingChapterID = bookID + "/" + chapterID
+        chapterRefreshError = nil
+        Task {
+            defer { refreshingChapterID = nil }
+            do {
+                let updated: OnlineChapter = try await request("/api/chapter-refresh", data: ["book_id": bookID, "chapter_id": chapterID])
+                if reading?.book_id == bookID, reading?.id == chapterID { reading = updated }
+                if editing?.book_id == bookID, editing?.id == chapterID {
+                    editing = try await request("/api/chapter?id=" + chapterID + "&book_id=" + bookID)
+                }
+                await refreshState()
+                if detail?.id == bookID { openBook(id: bookID) }
+            } catch { chapterRefreshError = localizedError(error) }
         }
     }
 
@@ -505,7 +624,7 @@ final class Model: ObservableObject {
 
     func saveChapter(_ chapter: Chapter, text: String) async -> Bool {
         do {
-            var payload: [String: Any] = ["id": chapter.id, "text": text]
+            var payload: [String: Any] = ["id": chapter.id, "text": text, "base_text": chapter.text ?? ""]
             if let bookID = chapter.book_id { payload["book_id"] = bookID }
             let _: Acknowledgement = try await request("/api/chapter", data: payload)
             apply(try await request("/api/state"))
@@ -556,6 +675,7 @@ final class Model: ObservableObject {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var ownedBackend: Process?
     static var editorHasUnsavedChanges = false
+    private var closeObserver: NSObjectProtocol?
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Use this build's artwork even while Launch Services still caches the
         // previous development build's icon for the same bundle identifier.
@@ -564,6 +684,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: nil, queue: .main) { _ in
+            DispatchQueue.main.async {
+                if !NSApp.windows.contains(where: { $0.isVisible && $0.canBecomeMain && !$0.isSheet }) {
+                    NSApp.setActivationPolicy(.accessory)
+                }
+            }
+        }
         Task { @MainActor in Localization.shared.updateNativeMenus() }
     }
     func applicationDidBecomeActive(_ notification: Notification) {
@@ -572,6 +699,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) { Self.ownedBackend?.terminate() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        sender.setActivationPolicy(.regular)
         if !flag { sender.windows.first(where: { $0.canBecomeMain && !$0.isSheet })?.makeKeyAndOrderFront(nil) }
         return true
     }
@@ -596,6 +724,7 @@ struct ChapterView: View {
     @State private var confirmDiscard = false
     @State private var saveError: String?
     @State private var showOriginal: Bool
+    @State private var showingHistory = false
     @Environment(\.dismiss) private var dismiss
     private var canEdit: Bool { chapter.state != "blocked" && (!model.downloading || model.state.book?.id != chapter.book_id) && !model.proofreading(chapter.book_id) && !model.translating(chapter.book_id) }
     private var hasTranslation: Bool { chapter.translation != nil || model.detail?.id == chapter.book_id && model.detail?.translation != nil || model.downloads.contains { $0.id == chapter.book_id && $0.translation != nil } }
@@ -609,10 +738,20 @@ struct ChapterView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(chapter.ordinal.map { L("第 \($0) 章 · \(displayedTitle)") } ?? displayedTitle).font(.headline)
+                    Text(chapter.ordinal.map { L("第 \($0) 章 · \(displayedTitle)") } ?? displayedTitle).font(.headline).lineLimit(1)
                     Text(showOriginal ? chapter.label : chapter.translation?.label ?? L("尚未翻译")).font(.caption).foregroundStyle(showOriginal ? chapter.color : .secondary)
                 }
                 Spacer()
+                if let bookID = chapter.book_id {
+                    Button(L("历史版本")) { showingHistory = true }.disabled(saving)
+                    if chapter.url?.hasPrefix("https://") == true {
+                        Button { model.refreshChapter(bookID: bookID, chapterID: chapter.id) } label: {
+                            if model.isRefreshingChapter(bookID: bookID, chapterID: chapter.id) { ProgressView().controlSize(.small) }
+                            else { Image(systemName: "arrow.clockwise") }
+                        }.help(L("更新正文")).accessibilityLabel(L("更新正文"))
+                            .disabled(saving || changed || model.refreshingChapterID != nil || model.working || !canEdit)
+                    }
+                }
                 if showOriginal, let source = chapter.screenshots?.first {
                     Button { model.showSource(source) } label: { Label(L("查看原图"), systemImage: "photo") }
                 }
@@ -630,6 +769,7 @@ struct ChapterView: View {
                 Text(LM(error)).font(.caption).foregroundStyle(.secondary)
             }
             if let saveError { Text(LM(saveError)).font(.caption).foregroundStyle(.red) }
+            if let refreshError = model.chapterRefreshError { Text(LM(refreshError)).font(.caption).foregroundStyle(.red) }
             if showOriginal, let proof = chapter.proofreading, proof.isCurrent {
                 VStack(alignment: .leading, spacing: 7) {
                     if (proof.issues_count ?? 0) > 0 { Text(L("本章有 \(proof.issues_count ?? 0) 处疑点，请对照原图确认。")) .font(.caption).foregroundStyle(.secondary) }
@@ -664,11 +804,11 @@ struct ChapterView: View {
             } else if !(chapter.text ?? "").isEmpty {
                 TextEditor(text: $text).font(.system(size: 15)).lineSpacing(6).padding(8)
                     .background(Color(nsColor: .textBackgroundColor)).clipShape(RoundedRectangle(cornerRadius: 8))
-                    .disabled(saving || !canEdit)
-                    .onChange(of: text) { _, _ in changed = true; AppDelegate.editorHasUnsavedChanges = true }
+                    .disabled(saving || !canEdit || model.refreshingChapterID != nil)
+                    .onChange(of: text) { _, value in changed = value != (chapter.text ?? ""); AppDelegate.editorHasUnsavedChanges = changed }
                     .accessibilityLabel(L("章节正文"))
             } else {
-                ContentUnavailableView(L("还没有正文"), systemImage: "doc.text.magnifyingglass", description: Text(L("采集成功后，可以在这里对照原图校对。")))
+                ContentUnavailableView(L("还没有正文"), systemImage: "doc.text.magnifyingglass")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             HStack {
@@ -684,11 +824,15 @@ struct ChapterView: View {
                         saving = false
                     }
                 }.buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command)
-                    .disabled(saving || !canEdit || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (chapter.text ?? "").isEmpty)
+                    .disabled(saving || model.refreshingChapterID != nil || !canEdit || text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (chapter.text ?? "").isEmpty)
                 }
             }
         }.padding(24).frame(width: 690, height: 540)
         .environment(\.locale, localization.locale)
+        .sheet(isPresented: $showingHistory) {
+            if let bookID = chapter.book_id { ChapterHistoryView(model: model, bookID: bookID, chapterID: chapter.id, title: chapter.title) }
+        }
+        .onChange(of: chapter.text) { _, value in if !changed && !saving { text = value ?? "" } }
         .onDisappear { AppDelegate.editorHasUnsavedChanges = false }
         .interactiveDismissDisabled(saving || changed)
         .alert(L("放弃未保存的修改？"), isPresented: $confirmDiscard) {
@@ -765,5 +909,10 @@ struct NovelistApp: App {
                     }
                 }
             }
+        MenuBarExtra {
+            UpdateMenuContent(model: model).environment(\.locale, localization.locale)
+        } label: {
+            Label(L("拾页"), systemImage: model.updates.changed_count > 0 ? "book.closed.fill" : "book.closed")
+        }.menuBarExtraStyle(.menu)
     }
 }

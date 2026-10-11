@@ -72,8 +72,35 @@ struct NativeLibraryFilterPerformance {
             return total + index.matchingBooks(selection, now: now).count
         }
         guard legacyRedraw.checksum == indexedRedraw.checksum else { fatalError("Filter candidates differ") }
+        var combinations: [LibraryFilterSelection] = []
+        for book in books.prefix(100) {
+            var item = LibraryFilterSelection()
+            if let value = book.classification?.orientation { item.toggle(value, in: .orientation) }
+            if let value = book.classification?.perspective { item.toggle(value, in: .perspective) }
+            item.publicationPeriods = [.lastYear, .last2Years]
+            item.favoriteRanges = [.under1k, .from1kTo5k, .from5kTo10k, .from10kTo50k, .from50kTo100k, .over100k]
+            item.tags = Set((book.tags ?? []).prefix(1))
+            combinations.append(item)
+        }
+        for item in combinations {
+            let expected = books.filter { item.matches(classification: $0.classification, tags: $0.tags ?? [], now: now) }.map(\.id)
+            guard index.matchingBooks(item, now: now).map(\.id) == expected else { fatalError("Combined filter results differ") }
+        }
+        var combination = 0
+        let combined = measure(runs: 500) {
+            defer { combination += 1 }
+            return index.matchingBooks(combinations[combination % combinations.count], now: now).count
+        }
         print(String(format: "books=%d build_index_ms=%.4f", books.count, build.milliseconds))
         print(String(format: "changing_selection_ms legacy=%.4f indexed=%.4f", legacyMatch.milliseconds, indexedMatch.milliseconds))
         print(String(format: "redraw_calculations_ms legacy=%.4f indexed=%.4f", legacyRedraw.milliseconds, indexedRedraw.milliseconds))
+        print(String(format: "combined_selection_ms=%.4f verified_combinations=%d", combined.milliseconds, combinations.count))
+        if CommandLine.arguments.count > 2 {
+            let directory = URL(fileURLWithPath: CommandLine.arguments[2], isDirectory: true)
+            let cached = try LibraryState.cached(in: directory)
+            let diskRead = measure(runs: 30) { (try! LibraryState.cached(in: directory)).books.count }
+            let startup = measure(runs: 30) { LibraryFilterIndex(books: (try! LibraryState.cached(in: directory)).books).books.count }
+            print(String(format: "cached_books=%d cached_checked=%d cached_basic=%d disk_load_ms=%.4f disk_and_index_ms=%.4f", cached.books.count, cached.classification_count ?? 0, cached.classification_basic_count ?? 0, diskRead.milliseconds, startup.milliseconds))
+        }
     }
 }

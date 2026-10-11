@@ -1,7 +1,7 @@
 import SwiftUI
 import AppKit
 
-struct BookMetadata: Decodable {
+struct BookMetadata: Decodable, Equatable {
     var description: String?
     var genre: String?
     var status: String?
@@ -15,8 +15,8 @@ struct BookMetadata: Decodable {
     var characters: [BookCharacter]?
     var relationships: [BookRelationship]?
 }
-struct BookCharacter: Decodable, Identifiable { var id: String; var name: String; var picture: String? }
-struct BookRelationship: Decodable { var start: String; var end: String; var direction: String }
+struct BookCharacter: Decodable, Equatable, Identifiable { var id: String; var name: String; var picture: String? }
+struct BookRelationship: Decodable, Equatable { var start: String; var end: String; var direction: String }
 struct CharacterCardsView: View {
     let info: BookMetadata
     private var linkedIDs: Set<String> { Set((info.relationships ?? []).flatMap { [$0.start, $0.end] }) }
@@ -72,19 +72,36 @@ struct BookCoverView: View {
 struct OnlineReadingView: View {
     @ObservedObject var model: Model
     let chapter: OnlineChapter
+    @State private var historyShown = false
     @Environment(\.dismiss) private var dismiss
+    private var displayedChapter: OnlineChapter {
+        if let current = model.reading, current.id == chapter.id && current.book_id == chapter.book_id { return current }
+        return chapter
+    }
+    private var updating: Bool { model.isRefreshingChapter(bookID: chapter.book_id, chapterID: chapter.id) }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text(chapter.title).font(.headline)
+                Text(displayedChapter.title).font(.headline)
                 Spacer()
+                Button { historyShown = true } label: { Label(L("历史版本"), systemImage: "clock.arrow.circlepath") }
+                    .disabled(updating)
+                Button { model.refreshChapter(bookID: chapter.book_id, chapterID: chapter.id) } label: {
+                    Label(updating ? L("正在更新…") : L("更新正文"), systemImage: "arrow.clockwise")
+                }.disabled(updating || model.working || model.readingChapter || model.proofreading(chapter.book_id) || model.translating(chapter.book_id))
                 Button(L("完成")) { dismiss() }.keyboardShortcut(.cancelAction)
             }.padding(22)
             Divider()
+            if let error = model.chapterRefreshError {
+                Text(LM(error)).font(.caption).foregroundStyle(.red).frame(maxWidth: .infinity, alignment: .leading).padding(.horizontal, 22).padding(.top, 12)
+            }
             ScrollView {
-                Text(chapter.text).font(.system(size: 17)).lineSpacing(9).textSelection(.enabled)
+                Text(displayedChapter.text).font(.system(size: 17)).lineSpacing(9).textSelection(.enabled)
                     .frame(maxWidth: 680, alignment: .leading).frame(maxWidth: .infinity, alignment: .center).padding(30)
             }
         }.frame(minWidth: 700, idealWidth: 800, minHeight: 520, idealHeight: 650)
+            .sheet(isPresented: $historyShown) {
+                ChapterHistoryView(model: model, bookID: chapter.book_id, chapterID: chapter.id, title: displayedChapter.title)
+            }
     }
 }
